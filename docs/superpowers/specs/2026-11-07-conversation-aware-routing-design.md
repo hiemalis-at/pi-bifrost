@@ -1,64 +1,51 @@
-# Conversation-Aware Routing
+# Conversation-Aware Classification
 
-Status: draft for review (revision 3: owner decisions folded in)
+Status: draft for review (revision 4: continuation floor removed, single feature)
 Date: 2026-11-07
 Branch: `docs/conversation-aware-routing` (fork: `hiemalis-at/pi-bifrost`)
 Upstream: `iamaamir/pi-bifrost`
 
 All line numbers refer to the files at commit `7477577` (`main`, v0.5.0).
 
-This document designs two cooperating changes.
+This document designs one change: the direct classifier (Jev) decides on the
+exchange so far, not on the current prompt alone. It is not approved for
+implementation: `AGENTS.md` requires an approved ADR before behavior changes
+(see [Governance](#governance)).
 
-- **Part A, continuation floor:** a small deterministic safety net. A bare
-  reply never routes below the tier of the work in progress.
-- **Part B, context-fed classification:** the main change. The direct
-  classifier (Jev) decides on the exchange so far, not on the current prompt
-  alone.
+Revision 3 had a second part, a "continuation floor" that kept a bare reply at
+the tier of the previous turn. The owner rejected it (see
+[Owner decisions](#owner-decisions)) and revision 4 removes it. The reasoning is
+kept in [What was dropped, and why](#what-was-dropped-and-why).
 
-Neither is approved for implementation: `AGENTS.md` requires an approved ADR
-before behavior changes, and this document does not draft one (see
-[Governance](#governance)).
-
-## Owner decisions (revision 2)
-
-These are the owner's answers to the revision 1 open questions. They are
-requirements, not proposals.
+## Owner decisions
 
 | # | Decision |
 |---|---|
-| 1 | Revision 2 asked for default-on with a direct Jev backend. **Superseded in revision 3: both parts are opt-in (`enabled: false` by default), per repo etiquette.** The owner still considers the implementation broken while Jev decides only on the current prompt and cannot use what was already done, said or exchanged, so Part B remains the goal; only the default changes. |
-| 2 | Mode: delegated. My call: ship `floor` only, drop `inherit` (see [Behavior](#behavior)). |
-| 3 | Explicit tier `order` list in config. |
-| 4 | Bare-reply thresholds: delegated. My call: 60 characters, 10 words, tuned later on the evaluation corpus. |
-| 5 | Decay: only a substantive prompt resets the incumbent. |
-| 6 | Whether bare replies are excluded from the fuzzy cache is **#179's scope** ([#179](https://github.com/iamaamir/pi-bifrost/issues/179)). This design only guarantees its own results are never cached. |
-| 9 | **Confidence:** trust Jev's confidence. When Jev answered with context at or above `minConfidence`, its tier stands and the floor does not override it (revision 3). |
-| 10 | **Context specifics** (3 turns, 6,000 characters, tool summaries, code-fence stubs, redaction) accepted as proposed. |
-| 7 | Part B sends as much conversation context as possible while staying security-sensible. The more Jev can weigh, the better. |
-| 8 | Pursue upstream (`iamaamir/pi-bifrost`), not a fork-only direction. |
+| 1 | The feature is **opt-in** (`enabled: false` by default), per repo etiquette. The owner still considers Bifrost broken for their workflows while Jev can only judge the current prompt, so the feature itself is the goal; only the default is opt-in. |
+| 2 | **No tier floor and no tier inheritance** (revision 4). Keeping the previous turn's tier is the wrong behavior: after a planning turn it keeps the expensive model on the execution that follows. The classifier must judge the work a turn will do, not the tier the last turn ran on. |
+| 3 | Jev's confidence is trusted. A returned judgment (which already met `minConfidence`) decides. There is one `classifier.minConfidence`, no second threshold. |
+| 4 | Cache handling for short replies is #179's scope ([#179](https://github.com/iamaamir/pi-bifrost/issues/179)). |
+| 5 | Send as much conversation context as possible while staying security-sensible. The more Jev can weigh, the better. Context specifics (3 exchanges, 6,000 characters, tool summaries, code-fence stubs, redaction) accepted. |
+| 6 | Pursue upstream: ADR first, then an issue to get the maintainer's reaction. Implementation happens in the fork regardless. |
 
 ## Problem
 
-Bifrost classifies every eligible user prompt from the prompt text alone.
-Workflows that are driven by short replies ("Approved", "yes", "looks right",
-"continue", "try again", a lone option number) therefore get a tier that
-describes the reply, not the work the reply triggers.
+Bifrost classifies every eligible user prompt from the prompt text alone. That
+cannot tell what **stage** of the work a turn is in.
 
-Those replies are often the most consequential turns in a session. The model
-selected at input handles the whole agent turn that follows, including tool
-calls. A reply that starts "write the plan", "dispatch the subagents" or "open
-the PR" can run on the cheapest tier because the text of the reply is trivial.
+Agent work alternates between planning and orchestration, where a strong model
+pays off, and execution, where a cheaper model usually suffices. A strong
+planning model rarely should also do the coding as an agent. The prompt text
+does not say which stage a turn is in; the conversation does.
 
-The problem is wider than bare replies. Any prompt that is only meaningful
-given earlier turns ("do the same for the other module", "use the second
-approach") is classified blind.
+The clearest symptom is short replies ("Approved", "yes", "continue", "try
+again", a lone option number). They are often the most consequential turns of a
+session, because the model selected at input runs the whole agent turn that
+follows, tool calls included. The same "Approved" can mean "start executing the
+plan" or "ship the one-line fix", and nothing in its text says which.
 
-The deepest form is **stage blindness**. Agent work alternates between
-planning and orchestration (where a strong model pays off) and execution (where
-a cheaper model usually suffices). A strong planning model rarely should also do
-the coding as an agent. The prompt text does not say which stage a turn is in;
-the conversation does. Classifying only the initial prompt of a turn therefore
-cannot make this distinction, which is the reason for this design.
+More generally, any prompt that only makes sense given earlier turns ("do the
+same for the other module", "use the second approach") is classified blind.
 
 ### Evidence
 
@@ -67,21 +54,22 @@ Reported from sustained real use by the author, not from a benchmark:
 1. Short replies that approve or continue earlier work were routinely
    classified into the cheapest tier, with high confidence, including when the
    work they started was the most consequential of the session. The classifier
-   is not wrong about the text: a bare approval really is trivial text. Raising
-   `minConfidence` cannot fix this.
+   is not wrong about the text. Raising `minConfidence` cannot fix this.
 2. Editing the tier criteria text can steer bare replies to a middle tier, but
    it cannot know the task state. The same "yes" after a trivial turn and after
    an architecture turn gets the same tier.
 
 A small live check on synthetic text is recorded in the
-[implementation plan](../plans/2026-11-07-conversation-aware-routing.md).
-Quantified evidence is deliberately left to the evaluation (Part B).
+[implementation plan](../plans/2026-11-07-conversation-aware-routing.md):
+object `state` is accepted by Jev, and whether Jev uses the history depends on
+the instruction text. Quantified evidence is deliberately left to the
+evaluation.
 
 ### Related defects this design must respect
 
 - `normalize()` in `cache.ts:31` discards word order, and the fuzzy cache
   (`cache.ts:138`, `cache.ts:214`, default threshold 0.85, default retention 30
-  days) can return one prompt's tier for a different prompt. A cached bare
+  days) can return one prompt's tier for a different prompt. A cached short
   reply keeps its tier regardless of conversation state. Upstream issue
   [#179](https://github.com/iamaamir/pi-bifrost/issues/179) tracks the cache's
   correctness defects.
@@ -91,35 +79,36 @@ Quantified evidence is deliberately left to the evaluation (Part B).
 
 ## Goals
 
-- Jev sees what was already done, said and exchanged, and decides on that, not
-  on the current prompt alone.
-- A bare reply should not route below the tier of the work in progress, unless
-  the user says so.
-- Every effect is visible in `/bifrost preview`, status and decision traces,
-  with its reason.
+- Jev sees what was already done, said and exchanged, and decides the tier of
+  the work the turn will do.
+- Users can express "strong model plans, cheaper model executes" in
+  configuration, through tier criteria written by role (see
+  [Expressing stages](#expressing-stages-in-configuration)).
+- Every effect is visible in `/bifrost preview`, status and decision traces.
 - Every effect can be disabled, bypassed with an inline tier word, or defeated
   by `/bifrost pin`.
-- Part A needs no network request, no extra latency and no new dependency.
-- Nothing secret leaves the machine because context is sent. The context sent
-  is bounded, redacted and reported (size, never content).
+- Nothing secret leaves the machine because context is sent. The context is
+  bounded, redacted and reported (size, never content).
 
 ## Non-goals
 
 - Summarizing or remembering the whole conversation.
-- Re-routing in the middle of a turn. Tool continuations and retries keep the
-  model that started the turn.
+- Re-routing in the middle of a turn. A prompt that asks for planning and
+  implementation in one turn still runs on one model. That is
+  [#160](https://github.com/iamaamir/pi-bifrost/issues/160)'s territory
+  (execution-stage classification) and is not solved here.
 - Replacing the classifier, adding a learned scorer, or adding a second routing
   resolver.
-- Session-level stickiness. That is ADR 0019 (proposed); see
-  [Relationship to existing work](#relationship-to-existing-work).
+- Any rule that derives a tier from the previous turn's tier (no floor, no
+  inheritance, no stickiness). Session-level stickiness is ADR 0019.
 - Sending tool results, file contents or raw tool arguments to any classifier.
 
 ## Anti-goals
 
 These make the work a failure even if every test passes.
 
-- A turn that triggers heavy work silently runs on a cheap model because the
-  user typed a short reply.
+- A tier chosen because the previous turn used it, so that planning-tier cost
+  follows the session into execution.
 - Repository content, tool output, file contents or credentials reach an
   external classifier.
 - Context-dependent classifications are written to the fuzzy cache and reused
@@ -132,192 +121,30 @@ These make the work a failure even if every test passes.
 
 `docs/product-philosophy.md` asks five questions before a feature is approved.
 
-| Question | Part A: continuation floor | Part B: context-fed classification |
-|---|---|---|
-| User value | Chooses better: bare replies stop undershooting. | Chooses better: Jev judges the work a reply triggers, not the reply text. |
-| Explicit policy | `classifier.continuation` config block, disabled by default. | `classifier.context` config block, disabled by default. |
-| Visibility | New `continuation` source in preview, status and trace, with the incumbent tier and the reason. | Preview and trace state whether context was sent, its size and what was redacted or elided, never its content. |
-| Override | Inline tier word, `/bifrost pin`, `enabled: false`. | Same. |
-| Proof | Deterministic pipeline and qualification tests. | Offline corpus evaluation, used to tune the budget and to guard against regressions on single-turn prompts. |
+| Question | Answer |
+|---|---|
+| User value | Chooses better: Jev judges the work a reply triggers, not the reply text. |
+| Explicit policy | `classifier.context` config block, disabled by default. Stage intent is expressed in the user's own tier criteria. |
+| Visibility | Preview and trace state whether context was sent, how many exchanges, its size, and what was redacted or elided, never its content. |
+| Override | Inline tier word, `/bifrost pin`, `enabled: false`. |
+| Proof | Deterministic request-shape, redaction and cache tests; an offline multi-turn corpus evaluation with a release guard fixed beforehand. |
 
-### Defaults
-
-Both blocks ship **disabled** (`enabled: false`). That keeps the feature inside
-the repo's escalation ladder (`explicit configuration → observable signal →
-advisory recommendation → explicit user/config opt-in → bounded automation`) and
-the privacy rule for prompt data (owner decision 1, revision 3).
-
-- Phase 1 is advisory: with the block disabled, preview and trace can still
-  report what the feature *would* have done, so the user can judge it before
-  opting in.
-- `/bifrost status` and the guide state what is sent and how to enable or
-  disable each block.
-- A later change may propose default-on for direct Jev backends (ADR 0020
-  already fills an absent `classifier.backend` from detected credentials). That
-  needs its own ADR and is not part of this design.
+The escalation ladder (`explicit configuration → observable signal → advisory
+recommendation → explicit opt-in → bounded automation`) is respected: the block
+ships disabled, and with it disabled, preview and trace can still report what
+context would have been sent (size only).
 
 ## Relationship to existing work
 
 | Item | Relationship |
 |---|---|
-| ADR 0019, session-sticky routing (proposed) | Complementary. 0019 keeps the first prompt's model for the whole session until an explicit instruction. This design stays in adaptive mode: substantive prompts are still re-classified. The two can be combined, and sticky mode would simply never reach this design. |
-| [#179](https://github.com/iamaamir/pi-bifrost/issues/179), classifier cache semantic safety | Must land first, or be coordinated. It also owns whether bare replies are excluded from the fuzzy cache regardless of this feature (owner decision 6). If #179 changes the cache API or lands a stricter rule, this design follows it. |
-| [#180](https://github.com/iamaamir/pi-bifrost/issues/180), compiled classification policy | Owns the classifier instruction text and its identity. Part B's changed instruction text goes through #180's compiler, not a new constant. |
-| [#161](https://github.com/iamaamir/pi-bifrost/issues/161), context-aware classification evaluation | Part B's evaluation phase is this experiment. This design adopts #161's acceptance criteria, including the retain-incumbent baseline, the privacy rule, truncation reporting and sticky/override precedence. #161 frames the work as an evaluation; owner decision 1 makes shipping the goal. That difference must be raised with the maintainer first (see [Delivery order](#delivery-order)). |
-| [#160](https://github.com/iamaamir/pi-bifrost/issues/160), [#157](https://github.com/iamaamir/pi-bifrost/issues/157) (listed blockers of #161) | The evaluation harness should reuse #157's paired runner if it exists by then. |
+| ADR 0019, session-sticky routing (proposed) | Complementary. 0019 keeps the first prompt's model for the whole session; this design stays in adaptive mode. Sticky mode never reaches the classifier after the first prompt. |
+| [#179](https://github.com/iamaamir/pi-bifrost/issues/179), classifier cache semantic safety | Must land first, or be coordinated. It owns whether short replies are excluded from the fuzzy cache regardless of this feature. This design only guarantees that context-fed calls bypass the cache. |
+| [#180](https://github.com/iamaamir/pi-bifrost/issues/180), compiled classification policy | Owns the classifier instruction text and its identity. The context instruction goes through #180's compiler, not a new constant. |
+| [#161](https://github.com/iamaamir/pi-bifrost/issues/161), context-aware classification evaluation | The evaluation phase is this experiment. This design adopts #161's acceptance criteria, including the retain-incumbent baseline (as an evaluation arm only), the privacy rule, truncation reporting and sticky/override precedence. #161 frames the work as an evaluation; the owner needs a shipping, opt-in change. That difference must be raised with the maintainer first. |
+| [#160](https://github.com/iamaamir/pi-bifrost/issues/160), [#157](https://github.com/iamaamir/pi-bifrost/issues/157) | #160 is the mid-turn counterpart (non-goal here). #157's paired runner should be reused by the evaluation if it exists by then. |
 
-## Part A: continuation floor
-
-### Behavior
-
-For a prompt that qualifies as a *bare reply*, the routed tier is the higher of
-the classifier's tier and the tier of the work in progress (the *incumbent*).
-If the classifier misses, the incumbent tier is used, never the default tier.
-
-There is one mode, `floor`. Revision 1 also offered `inherit` (use the
-incumbent tier and skip the classifier). It is dropped, because:
-
-- it makes no classifier call, so it contradicts the direction that Jev decides
-  on the exchange (decision 1);
-- it undershoots when a short but genuinely harder request follows a trivial
-  turn ("refactor it", "design the schema"), which `floor` handles;
-- two modes double the tests, docs and explanation for no capability `floor`
-  lacks. If it is wanted later it is an additive change.
-
-Plainly: `floor` means "Jev (with context) picks a tier, and a short reply is
-never allowed to go below what the previous turn was running on".
-
-`floor` needs a total order over tiers. The order of keys in `models` is not a
-contract (merged layers and bundled defaults change it, see upstream issue
-[#199](https://github.com/iamaamir/pi-bifrost/issues/199)), so the order is
-explicit:
-
-```json
-"classifier": {
-  "continuation": {
-    "enabled": false,
-    "order": ["trivial", "light", "heavy", "critical"],
-    "maxChars": 60,
-    "maxWords": 10
-  }
-}
-```
-
-`enabled` defaults to `false`. `order` may be omitted when it can be derived
-unambiguously (see [Edge cases](#edge-cases)).
-
-**The floor yields to Jev only when Jev saw the context** (owner decision 9).
-When Part B sent context and Jev answered at or above `minConfidence`, Jev's tier
-stands: it is Jev's domain, and it judged the exchange. The floor applies when:
-
-- context was not sent (Part B disabled, first turn, or an override path), because
-  a confident answer on bare text is the failure the evidence shows (such
-  answers are confident);
-- Jev missed or answered below `minConfidence`.
-
-The trace shows which rule decided, and both tiers when they differ.
-
-### What qualifies as a bare reply
-
-A deterministic, language-independent test on the trimmed prompt (the same
-text the classifier would see after the inline-override strip at
-`index.ts:612`):
-
-- at most `maxChars` (60) characters and at most `maxWords` (10)
-  whitespace-separated words;
-- a single line, with no code fence, URL or path-like token (contains `/` or `\`
-  between non-space characters).
-
-Thresholds are my guess. 60 characters is a starting point for "short prompt";
-10 words admits "looks right, go ahead and open the PR". Tune on the
-evaluation corpus.
-
-No word lists (they would be English-only). The test is intentionally broad: a
-short imperative like "fix it" qualifies, and that is correct, because it refers
-to something earlier in the conversation. The cost of over-qualifying is a
-higher tier than strictly needed, bounded by the incumbent.
-
-Qualification applies only when an incumbent exists. With no incumbent (a fresh
-session or a resumed one), behavior is exactly today's, plus Part B.
-
-### Incumbent
-
-The final tier of the previous dispatched turn in this session, including a tier
-lifted by the floor. It is stored next to `pinned` in `runtime-state.ts:12`:
-session-local, ephemeral, never persisted, and not inherited by subagent
-sessions (`PI_SUBAGENT_RUN_ID`, see `index.ts:592`).
-
-**Only a substantive prompt resets it** (owner decision 5): a prompt that does
-not qualify as a bare reply sets the incumbent to its own tier, which can be
-lower. Consecutive bare replies never lower it and never decay it by count or
-time. A user who wants a lower tier types an inline tier word, runs
-`/bifrost pin`, or sends a substantive prompt.
-
-### Where it sits in the pipeline
-
-`classification-pipeline.ts:73` currently runs: direct-model regex pre-check
-(`:74`), cache (`:88`), direct classifier (`:97`), prompt classifiers (`:114`),
-regex tier rules (`:135`), default (`:152`). Precedence for a prompt becomes:
-
-1. inline tier word (`index.ts:612`) and `/bifrost pin` (`index.ts:601`),
-   unchanged and still highest;
-2. direct-model regex rules (`:74`), unchanged: a destructive-command rule must
-   beat the floor;
-3. stages 4 onward run as today (with Part B context on the direct classifier);
-4. **continuation floor** (new): for a bare reply with an incumbent, the result
-   is the higher of the stage-3 result and the incumbent, except that a
-   confident stage-3 answer that was given context stands as is. A stage-3 miss
-   yields the incumbent.
-
-Both call sites share `pipeline.classify`: the physical-selection input handler
-(`index.ts:669`) and the `bifrost/auto` dispatcher (`index.ts:445`). The
-incumbent must be maintained and read on both paths.
-
-### Cache rule
-
-Results with source `continuation` are never written to the cache. A bare reply
-never reads from the cache while the floor is active, because a cached tier for
-"Approved" is a tier for a different conversation state. Whether bare replies
-are excluded from the cache independently of this feature is #179's scope
-(owner decision 6). If #179 lands a stricter rule, that rule wins.
-
-### Visibility
-
-- `ClassificationResult` gains the source `continuation` and carries the
-  incumbent tier, the classifier tier (when there was one), and the reason: bare
-  reply, length, word count.
-- `/bifrost preview` prints the same, and `--json` includes them. Preview runs
-  inside the live session, so it can report the real incumbent.
-- Status and decision traces (ADR 0007) show the source, whether the floor
-  overrode the classifier, or that Jev's context-fed answer stood.
-- Phase 1 (advisory): preview and trace report what the floor *would* have
-  chosen without changing the route.
-
-### Edge cases
-
-| Case | Behavior |
-|---|---|
-| Incumbent tier has no healthy candidate | Existing tier fallback and reliability rules apply unchanged. |
-| Incumbent tier no longer exists in config (reload) | Treated as no incumbent. |
-| `order` missing a configured tier | Config validation error naming the tier, at load. The floor never silently ignores a tier. |
-| `order` omitted | Allowed only when exactly one unambiguous order exists (a single `models` layer); otherwise config validation error asking for `order`. Detection never guesses (see #199). |
-| Queued prompts while streaming (`event.streamingBehavior`) | Follow the existing virtual-auto and input handling; the incumbent is the last *dispatched* turn, not a queued one. |
-| Session resume | No incumbent until the first dispatch. |
-| Consecutive bare replies | Each keeps the incumbent. Cost can stay high for a long session of approvals; this is accepted (decision 5) and visible in status. |
-
-## Part B: context-fed classification
-
-### Hypothesis and status
-
-Some prompts cannot be judged from the prompt text, or even from the previous
-tier ("Use the second approach", "Fix it" after a long analysis). Giving Jev the
-exchange so far lets it judge the work being triggered.
-
-Owner decision 1 makes this the main change and the reason the feature exists.
-Nothing in this repo yet shows that the TypeSafe classifier makes good use of
-extra state, so the evaluation below tunes the design and guards against
-regressions rather than deciding whether to build it. Part A is the backstop if
-Jev ignores the context.
+## Design
 
 ### What the code allows
 
@@ -325,72 +152,74 @@ Jev ignores the context.
   pi-native backend sends `{ prompt }` (`classifier-pi-native.ts:96-100`), so
   adding fields is a local change.
 - The direct TypeSafe backend sends `state: input.prompt` as a string
-  (`typesafe-classifier.ts:45-49`). **Verified against the TypeSafe docs
-  (revision 3): `state` accepts a string, a JSON object or a JSON array.** The
-  OpenAPI schema for `POST /v1/systemone` types `state` as `anyOf` string,
-  object, array (`x-accepts: string | object | array`), and the state page says
-  "State is a string, JSON object, or array". Both direct backends therefore get
-  the same object state; no string serialization fallback is needed. Limits of
-  this verification: the docs' `POST /v1/systemone` request examples all pass a
-  string, and no live call was made; the docs do not state key restrictions or
-  nesting limits. Part B's first tests must include one real request with an
-  object `state` before release (a deterministic fake-server test cannot prove
-  the live endpoint).
+  (`typesafe-classifier.ts:45-49`). **Verified against the TypeSafe docs:
+  `state` accepts a string, a JSON object or a JSON array.** The OpenAPI schema
+  for `POST /v1/systemone` types `state` as `anyOf` string, object, array. Both
+  direct backends therefore get the same object state. Limits of this
+  verification: the documented request examples all pass a string, and the docs
+  give no key or nesting limits. A live check through Pi's registry accepted an
+  object; the direct endpoint is checked before release.
 - The docs describe referencing parts of an object state from the question's
-  `instructions` with backticked dot paths (for example
-  `previous_exchanges[0].assistant`). Part B uses named keys and says in the
-  instruction text which key is the current prompt and which is history. This is
-  a prompt convention; the docs do not say whether the server resolves the paths
-  or the model only reads them.
+  `instructions` with backticked dot paths. This is a prompt convention; the
+  docs do not say whether the server resolves the paths. The design uses named
+  keys and says in the instruction text which key is the current prompt and
+  which is history.
 - The question text ("Which model tier best fits this coding-agent request?") is
   fixed in both builders. Telling the classifier how to use context needs new
-  instruction text, which belongs to #180's compiler, and changes the cache
-  identity.
+  instruction text, which belongs to #180's compiler.
 - Prompt text is bounded to 16,000 characters
-  (`classifier-semantics.ts:8-10`). Context needs its own budget, and the total
-  must still respect the classifier's input limit.
+  (`classifier-semantics.ts:8-10`). Context has its own budget.
 - Extensions can read history through `ctx.sessionManager.getBranch()`
   (`ReadonlySessionManager` in the Pi coding-agent types).
 
 ### What is sent
 
 The goal is to maximize what Jev can weigh without sending repository content or
-secrets. The calls below are mine; the owner asked for "as much as possible but
-security-sensible" and has not reviewed the specifics.
+secrets. The specifics are accepted by the owner.
 
 Sent, newest first, within one character budget:
 
 - the **current prompt** (as today);
-- the last **N exchanges** (default 3): each is the user's prompt and the
-  assistant's final text for that turn;
-- the **tier each of those turns ran on**;
+- the last **N exchanges** (default 3): the user's prompt and the assistant's
+  final text for each turn;
+- the **tier each of those turns ran on**, derived by matching the assistant
+  message's model against the configured pools (omitted when ambiguous). This
+  is information for Jev, never an input to a tier rule;
 - per turn, a **tool activity summary**: tool names and counts only, for
   example "edit x4, bash x2, subagent x1". No arguments, no results, no paths.
-  This tells Jev that real work happened, which is the signal a bare "continue"
-  needs.
+  This tells Jev whether the previous turn planned (reads, questions) or
+  executed (edits, commands).
 
 Never sent: tool results, file contents, tool arguments, system prompts,
-reasoning blocks, attachments or images.
+reasoning blocks, attachments or images, anything from a parent session.
 
-Shape: an object `state` with the keys `current_prompt`, `previous_exchanges`
-(each with `user`, `assistant`, `tier`, `tools`) and `omitted_earlier_turns`.
-Pi-native and direct TypeSafe send the same object.
+Treatment:
 
-Treatment of what is sent:
-
-- **Code fences** in assistant text are replaced with a stub carrying language
-  and line count (for example `[code: ts, 42 lines]`). Prose around them stays.
-  That keeps "a large change was proposed" visible without sending the code.
-- **Redaction:** a pattern scrub for credentials runs on all sent text: provider
-  API key shapes, `Authorization` headers, private key blocks, `.env`-style
-  `NAME=value` assignments with secret-like names, and long high-entropy tokens.
-  Matches become `[redacted]`.
-- **Budget:** `maxChars` total (default 6,000), filled newest first, each
-  assistant message truncated at its own cap. When something is dropped, the
-  request says so ("earlier turns omitted") so Jev does not treat the window as
+- **Code fences** in assistant text become a stub carrying language and line
+  count (`[code: ts, 42 lines]`). Prose around them stays.
+- **Redaction:** a pattern scrub on all sent text: provider API key shapes,
+  `Authorization` headers, private key blocks, `.env`-style `NAME=value`
+  assignments with secret-like names, and long high-entropy tokens become
+  `[redacted]`. Applies to earlier user prompts as well as assistant text.
+- **Budget:** `maxChars` total (default 6,000), per-assistant cap 2,000
+  characters, per-user cap 1,000, filled newest first. When something is
+  dropped, `omitted_earlier_turns` is true, so Jev does not treat the window as
   the whole conversation.
-- **Truncation reporting:** the trace records how many turns were included,
-  total characters, and whether anything was truncated or redacted.
+- **Trailing user message:** an unanswered final user message in the branch is
+  the current prompt and is never sent as a previous exchange.
+
+Request shape (identical for `pi-native` and direct TypeSafe):
+
+```text
+state = {
+  current_prompt,
+  previous_exchanges: [{ user, assistant, tier?, tools? }],
+  omitted_earlier_turns
+}
+```
+
+Without context (feature disabled, first turn of a session, subagent session,
+prompt backend) the request is byte-identical to today's.
 
 Config:
 
@@ -406,149 +235,178 @@ Config:
 }
 ```
 
-`enabled` defaults to `false`. The prompt classifier backend never receives
-context, even when enabled.
+### Expressing stages in configuration
 
-### Rules
+"Strong model plans, cheaper model executes" is policy, so it lives in the
+user's tier criteria, not in code. With context, criteria written by role let
+Jev map "approve the plan" to the execution tier. The guide gets an example:
 
-- **Opt-in, with disclosure.** The guide and `/bifrost status` state that
-  enabling this block sends conversation context (bounded, redacted, no tool
-  output) to the classifier provider, and how to turn it off.
-- **Cache:** when context was sent, the fuzzy cache is bypassed for both read
-  and write, or keyed on a context hash under #179's scheme. Consequence: from
-  the second turn of a session, most classifications skip the cache. The first
-  turn has no context and caches as today. This cost is accepted; #179's keyed
-  scheme is the way to recover it.
-- **Visibility:** preview and trace report that context was sent, how many
-  turns, its length, and what was elided or redacted, never its content. Debug
-  output must not persist it (the existing TypeSafe debug rule: raw prompts and
-  bodies are never persisted).
-- **Failure:** a classifier miss, or an answer below `minConfidence`, falls
-  through exactly as today, with the Part A floor applied if enabled.
-- **Overrides:** inline tier word and `/bifrost pin` skip classification, so
-  nothing is sent. Subagent sessions send no parent context.
+```json
+"criteria": {
+  "planner": "Planning, design, orchestration, review and decisions between options. Not carrying out an agreed plan.",
+  "worker":  "Carrying out an agreed plan: implementation, edits, tests, mechanical follow-through. Not choosing between designs."
+}
+```
 
-### Evaluation
+The context instruction tells Jev to judge the work the assistant will perform
+as a result of the current prompt, not the length of the prompt. When the prompt
+is a short reply, that work is whatever the most recent exchange proposed or
+asked to do.
+
+### Behavior
+
+- Context is sent to the direct classifier only, on every classification while
+  enabled (not only for short prompts: the owner wants Jev to weigh as much as
+  is sensible).
+- A returned judgment decides. There is no floor and no inheritance.
+- When the classifier misses (error, invalid answer, or below
+  `classifier.minConfidence`) the pipeline falls through exactly as today:
+  prompt classifier fallback if configured, regex rules, default tier. The
+  report says the classification was made without usable context so the user can
+  see it.
+- Precedence is unchanged: inline tier word and `/bifrost pin` first (they skip
+  classification, so nothing is sent), direct-model regex rules next, then the
+  classifier stages.
+- Subagent sessions (`PI_SUBAGENT_RUN_ID`, `index.ts:592`) send no context.
+- Both call sites share `pipeline.classify`: the physical-selection input
+  handler (`index.ts:669`) and the `bifrost/auto` dispatcher (`index.ts:445`).
+  Both build context the same way.
+
+### Cache
+
+When context was sent, the fuzzy cache is bypassed for read and write, or keyed
+on a context hash under #179's scheme. Consequence: with the block enabled, from
+the second turn of a session most classifications skip the cache. The first turn
+has no context and caches as today. This cost is accepted; #179's keyed scheme
+is the way to recover it. Whether short replies are excluded from the cache
+regardless of this feature is #179's scope.
+
+### Visibility
+
+- `ClassificationJudgment` carries `contextSent`. Preview, status and decision
+  traces (ADR 0007) report that context was sent, the number of exchanges, the
+  character count, and whether anything was redacted or truncated. Never
+  content.
+- `/bifrost preview --json` includes the same fields. Preview runs inside the
+  live session, so it reports the real context size.
+- Debug output must not persist context (the existing TypeSafe debug rule: raw
+  prompts and bodies are never persisted).
+- With the block disabled, preview can still report what would have been sent
+  (size only), so the user can judge it before opting in.
+
+### Disclosure
+
+Enabling the block sends assistant text to the classifier provider. The guide
+and `/bifrost status` say so plainly and state how to turn it off. The provider
+is the one the user already chose for prompt classification, over the same
+transport.
+
+## What was dropped, and why
+
+Revision 3 proposed a continuation floor: for a short reply, route at the higher
+of the classifier tier and the tier of the previous turn. It is removed because
+it encodes the wrong rule. After a planning turn, the next reply usually starts
+execution, which should go to a cheaper model; a floor keeps the expensive model
+there. The right question is never "what tier did the last turn use" but "what
+work does this turn trigger". Dropping it also removes the bare-reply test
+(character and word thresholds), the explicit tier `order`, the incumbent
+state, the `continuation` source and its cache rules.
+
+The previous-tier idea survives in exactly one place: the **retain-incumbent
+baseline arm** of the evaluation, as #161 asks, to measure how far inertia would
+get. It is never product behavior.
+
+## Evaluation
 
 Follow #161 for the method. Build a **synthetic** multi-turn corpus, extending
 the scenario format in `scripts/jev-benchmark.ts` and `tests/corpus/jev` with a
-`context` field (previous exchanges, tool summaries, previous tiers). Families
-include approvals, bare numbers and option letters, "Fix it.", "Continue.",
-"Use the second approach.", "try again", a short new task after a trivial turn,
-a short new task after a heavy turn, and ordinary single-turn prompts. Gold tier
-is the tier of the *work triggered*, with a rationale and an ambiguity note.
+`context` field (previous exchanges, tool summaries, tiers). Families include
+approvals after a plan, approvals after a small fix, bare numbers and option
+letters, "Fix it.", "Continue.", "Use the second approach.", "try again", a
+short new task after a trivial turn, a short new task after a heavy turn, and
+ordinary single-turn prompts. Gold tier is the tier of the *work triggered*,
+with a rationale and an ambiguity note.
 
 Arms:
 
 1. today (prompt only);
-2. Part A floor on top of arm 1;
-3. prompt plus context;
-4. prompt plus context plus Part A floor, with Jev's confident context-fed
-   answer standing (the configuration both blocks enabled).
+2. retain-incumbent baseline (evaluation only);
+3. prompt plus context.
 
-Report per family: accuracy, under-routing (gold higher than chosen) and
+Report per family: accuracy, under-routing (gold higher than chosen),
 over-routing (gold lower than chosen), the classifier-miss rate on
-context-dependent requests separately from ordinary low confidence, how often
-the floor lifts a miss or low-confidence answer, how often a confident
-context-fed answer is lower than gold, and requests whose decisive
-text falls beyond the input bound. Also sweep `turns` and `maxChars` to pick the
-defaults.
+context-dependent requests, the confidence distribution of context-fed answers,
+and requests whose decisive text falls beyond the input bound. Also sweep
+`turns` and `maxChars` to pick defaults, and compare instruction wordings.
 
 Constraints from #161 apply: no prompt text or repository content in committed
 artifacts, offline except where paid evaluation is explicitly authorized, and
 sticky/override precedence unchanged during the experiment.
 
-**Release guard, set before running anything and recorded in the PR:** arm 4 must
-not under-route more than arm 1 on any family, and must not regress on the
-single-turn families. The margin by which arm 3 should beat arm 2 on the
-context-dependent families is recorded as a target. Missing the guard blocks the
-change; missing the target does not cancel it (decision 1) but is reported in the
-ADR. Because both blocks are opt-in, the result informs the documentation
-(what to enable and what to expect), not a default.
+**Release guard, recorded before running anything:** arm 3 must not be less
+accurate than arm 1 on the single-turn families, and must be more accurate than
+arms 1 and 2 on the context-dependent families. Missing the guard blocks the
+change; the exact margin is recorded in the PR first.
 
 ## Testing
 
 Deterministic, per `AGENTS.md`: fake registry and fake classifier, no live
 providers.
 
-Part A:
-
-- table-driven qualification tests: boundaries of `maxChars` and `maxWords`,
-  multi-line, code fence, URL, path, non-English replies, empty string;
-- pipeline tests (`tests/pipeline.test.ts` style): the classifier tier lower
-  than, equal to and higher than the incumbent; classifier miss; no incumbent;
-  a substantive prompt lowering the incumbent; consecutive bare replies not
-  lowering it;
-- precedence tests: inline tier word, pin, direct-model rule, then the floor;
-- cache tests: a `continuation` result is never stored, and a bare reply never
-  reads the cache while the floor is active;
-- both call sites: physical input handler and `bifrost/auto`
-  (`tests/dispatch-ownership.test.ts` style);
-- default tests: both blocks disabled when `enabled` is absent, with every
-  effective backend;
-- confidence tests: a confident context-fed answer below the incumbent stands;
-  the same answer without context is lifted; a low-confidence context-fed
-  answer is lifted;
-- config tests: `order` validation, unknown tier, schema agreement
-  (`tests/schema.test.ts`), docs drift (`tests/docs-command-drift.test.ts`);
-- reverted-guard run showing the new assertions go red, plus `npm test` and
-  `npm run typecheck` output in the PR.
-
-Part B:
-
-- fake-registry tests that the request carries exactly the bounded context and
-  nothing else (no tool results, arguments or file contents);
-- redaction table tests, including near-miss strings that must not be redacted;
-- code-fence stub and truncation tests, including the "earlier turns omitted"
-  marker;
-- pi-native and direct TypeSafe send the same object `state`;
-- one live (explicitly authorized) request with object `state` to the real
-  endpoint before release, with synthetic content only;
-- the cache is bypassed when context is sent and not when none is;
+- request shape: pi-native and direct TypeSafe send the same object `state`;
+  without context the request is unchanged; nothing but the documented keys is
+  sent;
+- context builder: turn pairing, trailing unanswered user message dropped,
+  non-message branch entries skipped, thinking and image blocks ignored, caps and
+  budget, truncation marker, tier lookup (unique match only), tool summary;
+- redaction table tests, including near-miss strings that must survive; code
+  fence stubs including unclosed fences;
+- pipeline: context passed to the direct classifier, `contextSent` on the
+  judgment, cache bypassed for read and write when context was sent, a context-fed
+  miss falls through as today;
+- subagent sessions and the prompt backend send no context;
 - debug output never contains context;
-- the evaluation corpus and runner (above).
+- config and schema agreement (`tests/schema.test.ts`), docs drift
+  (`tests/docs-command-drift.test.ts`);
+- a reverted-guard run showing the new assertions go red, plus `npm test` and
+  `npm run typecheck` output in the PR.
 
 ## Delivery order
 
-1. Comment on upstream #161, #179 and #180 with the evidence and the proposed
-   direction, and ask the maintainer whether #161's evaluation framing can
-   become a shipping (opt-in) change. Drafts are
-   prepared but not posted until the owner approves the wording.
-2. Land or track #179. Open the ADR (proposed), covering Part A and Part B; or
-   two ADRs if the maintainer prefers.
-3. Part A phase 1 (advisory: preview and trace only), then phase 2 (opt-in
-   routing effect).
-4. Part B evaluation corpus and runner (no product change), including the
-   release guard.
-5. Part B product change behind the same advisory-then-effect phases, with its
-   ADR accepted.
+1. Open an upstream issue (problem, proposal, questions) and wait for the
+   maintainer's reaction. Draft the ADR (proposed) meanwhile; it is submitted
+   only on the owner's say-so.
+2. Land or track #179.
+3. Evaluation corpus and runner (no product change), release guard recorded
+   first.
+4. Product change in the fork (and upstream once agreed), advisory reporting
+   first, then the opt-in effect.
+5. After implementation: comments on #161, #179, #180 with the problem
+   statement and results, text approved by the owner first.
 
-Each step is its own PR to `iamaamir/pi-bifrost` with Conventional Commit
-messages, branched from the fork (`hiemalis-at/pi-bifrost`). Steps 3 to 5 do not
-start before the ADR is accepted.
+Each step is its own PR with Conventional Commit messages. The fork
+(`hiemalis-at/pi-bifrost`) carries the work regardless of upstream's answer,
+because the owner needs the feature.
 
 ## Governance
 
 `AGENTS.md`: "proposed ADRs are not implementation approval", and ADR drafts
-are not committed unless requested. This document is a design, not an ADR.
-The ADR (next free number, assigned upstream) is needed before product code. It
-should also record the decision that Jev's confident context-fed answer beats the
-floor.
+are not committed unless requested (`docs/adr/*` is gitignored upstream). This
+document is a design, not an ADR. The ADR (next free number, assigned upstream)
+is needed before product code upstream.
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| Enabling Part B sends conversation context to the classifier provider | Opt-in; same recipient as the prompt; bounded, redacted, no tool output; disclosed in status and guide; reported by size in preview and trace. |
-| Redaction misses a secret shape | Pattern scrub plus never sending tool results, arguments or files; redaction table tests; the assistant's own text is the only prose source. |
-| Over-routing: a long session of approvals stays on an expensive tier | Visible source in status; opt-out; user can lower with an inline tier word, pin or a substantive prompt. Accepted cost of decision 5. |
-| A confident context-fed answer is too low and nothing lifts it | Accepted (decision 9). Trace shows the answer and incumbent; the evaluation reports how often it is below gold; the user can enable only the floor or pin. |
-| Jev ignores or misreads the extra state | The floor still covers misses, low confidence and runs without context; evaluation and release guard. |
-| Cache bypass raises cost and latency from turn two when Part B is enabled | Accepted in v1; #179's keyed scheme recovers it. |
-| Cache serves a stale or wrong-context tier | Never cache continuation or context results. |
-| Incumbent or context leaks across sessions or subagents | Session-local, ephemeral, excluded for subagent runs. |
-| Config order drift between layers | Explicit `order`, validated at load. |
-| Evidence is one user's history | The evaluation uses a synthetic public corpus and a pre-set release guard. |
+| Jev ignores or misreads the extra state | The evaluation and release guard decide; instruction text is a single constant; users keep inline tier words and `/bifrost pin`. |
+| Context-fed answers come back at low confidence and miss | The evaluation reports the confidence distribution. Misses fall through as today, visibly. A separate threshold is rejected for config complexity; revisit only with data. |
+| Enabling the block sends conversation context to the classifier provider | Opt-in; same recipient as the prompt; bounded, redacted, no tool output; disclosed in status and guide; size-only reporting. |
+| Redaction misses a secret shape | Pattern scrub plus never sending tool results, arguments or files; redaction table tests. |
+| Cache bypass raises cost and latency from turn two | Accepted in v1; #179's keyed scheme recovers it. |
+| Context-dependent tier served from the cache | Context-fed calls never read or write the cache. |
+| Context leaks across sessions or subagents | Built per call from the current session branch; excluded for subagent runs. |
+| A planner-tier model still executes within a single turn | Out of scope (#160); stated in non-goals and the issue. |
 
 ## What stays unchanged
 
@@ -558,23 +416,12 @@ to configured tiers; classification cache never storing model answers.
 
 ## Open questions
 
-Owner decisions 1 to 10 are recorded above. What remains:
-
-1. **Live confirmation of object `state`.** The docs say object state is
-   accepted, and pi-native already sends one. A live call with synthetic content
-   has not been made; it needs the owner's go-ahead because it uses their
-   credential and sends data to the provider.
-2. **Does Jev weigh object history as well as a string?** The docs describe
-   backticked paths as a prompt convention only. The evaluation answers this;
-   the maintainer may know.
+1. **Does Jev weigh object history well enough?** The evaluation answers it; the
+   live probe suggests it depends on the instruction text and that confidence
+   may be low.
+2. **Direct endpoint.** Does `api.typesafe.ai/v1/systemone` (`jev-1.13.0`) behave
+   like the Pi-routed model? Verified before release.
 3. **Cache cost.** Is bypassing the fuzzy cache whenever context is sent
    acceptable in v1, pending #179?
-4. **Default-on later.** Out of scope here; worth a follow-up ADR only after the
-   evaluation shows the benefit.
-5. **Floor direction after a planning turn.** The floor keeps the incumbent
-   tier, so an approval that follows a planning turn keeps the strong model for
-   the execution that follows. For stage-aware routing that is the opposite of
-   the goal. Part B is the part meant to fix it (Jev judges the work the reply
-   triggers); the floor is a safety net for undershooting and is opt-in and
-   independent of Part B. Should the floor be limited to cases where context was
-   not sent, or dropped from v1?
+4. **ADR.** One ADR is enough now that the feature is a single change; the
+   maintainer may prefer otherwise.
