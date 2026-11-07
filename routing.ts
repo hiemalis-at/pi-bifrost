@@ -84,6 +84,16 @@ function modelLowerMatches(m: Model<Api>, lower: string): boolean {
   return meta.lowerId.includes(lower) || meta.lowerProvider.includes(lower);
 }
 
+/** Whether a model pool pattern selects the given model, without a registry.
+ * Same semantics as findCandidates: "provider/id" is exact, anything else is a
+ * case-insensitive substring of the model id or provider. */
+export function poolPatternMatches(pattern: string, provider: string, modelId: string): boolean {
+  if (!pattern) return false;
+  if (pattern.includes("/")) return pattern === `${provider}/${modelId}`;
+  const lower = pattern.toLowerCase();
+  return modelId.toLowerCase().includes(lower) || provider.toLowerCase().includes(lower);
+}
+
 export function findCandidates(
   ctx: ExtensionContext,
   pattern: string | string[] | undefined,
