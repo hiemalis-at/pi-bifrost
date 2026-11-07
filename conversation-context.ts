@@ -42,8 +42,9 @@ const REDACTED = "[redacted]";
 // Order matters: whole-block and header shapes first so later patterns do not
 // re-match their remains. "[redacted]" values are skipped by the assignment rule.
 const SECRET_NAME = "(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD)";
-// Skips values already redacted, bare or quoted, so one secret counts once.
-const SECRET_VALUE = `(?!["']?\\[redacted\\])(?:"[^"\\n]*"|'[^'\\n]*'|\\S+)`;
+// Skips values that are exactly "[redacted]" (bare or quoted) so one secret counts once;
+// a value that merely starts with it is still consumed whole.
+const SECRET_VALUE = `(?!"\\[redacted\\]"|'\\[redacted\\]'|\\[redacted\\](?!\\w))(?:"[^"\\n]*"|'[^'\\n]*'|\\S+)`;
 
 const REDACTION_PATTERNS: readonly (readonly [RegExp, boolean?])[] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],

@@ -73,6 +73,21 @@ describe("redactSecrets", () => {
     assert.ok(!flag.text.includes("sk-abcdefgh1234"));
   });
 
+  it("does not leak the rest of a quoted value that starts with a redacted secret", () => {
+    const first = redactSecrets('password: "sk-abcdefgh1234 hunter2"');
+    assert.ok(!first.text.includes("hunter2"), first.text);
+    assert.ok(first.count >= 1);
+    for (const [input, leak] of [
+      ['token: "[redacted]s3cret"', "s3cret"],
+      ['password: "[redacted] hunter2"', "hunter2"],
+      ["password: [redacted]hunter2", "hunter2"],
+    ]) {
+      const out = redactSecrets(input);
+      assert.ok(!out.text.includes(leak), `${input} -> ${out.text}`);
+      assert.ok(out.count >= 1);
+    }
+  });
+
   it("leaves a literal quoted [redacted] value unchanged", () => {
     const input = '{"token": "[redacted]"}';
     assert.deepEqual(redactSecrets(input), { text: input, count: 0 });
