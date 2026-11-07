@@ -53,26 +53,29 @@ The problem is wider than bare replies. Any prompt that is only meaningful
 given earlier turns ("do the same for the other module", "use the second
 approach") is classified blind.
 
+The deepest form is **stage blindness**. Agent work alternates between
+planning and orchestration (where a strong model pays off) and execution (where
+a cheaper model usually suffices). A strong planning model rarely should also do
+the coding as an agent. The prompt text does not say which stage a turn is in;
+the conversation does. Classifying only the initial prompt of a turn therefore
+cannot make this distinction, which is the reason for this design.
+
 ### Evidence
 
-Measured with `/bifrost preview` on one developer's real session history
-(three consecutive sessions on one project, 24 distinct prompts). Aggregate
-numbers only; no prompt text is recorded here. This is indicative, not a
-benchmark: one user, one project, a small sample.
+Reported from sustained real use by the author, not from a benchmark:
 
-| Class | Count | Result with the pi-native/Jev classifier and a 0.7 confidence floor |
-|---|---|---|
-| Short prompts (60 characters or fewer) | 14 | 9 routed to the cheapest tier, 5 fell back to the default tier, none routed higher |
-| Of the 9 cheapest-tier results | 9 | confidence 0.71 to 0.99, four of them at 0.96 or above |
+1. Short replies that approve or continue earlier work were routinely
+   classified into the cheapest tier, with high confidence, including when the
+   work they started was the most consequential of the session. The classifier
+   is not wrong about the text: a bare approval really is trivial text. Raising
+   `minConfidence` cannot fix this.
+2. Editing the tier criteria text can steer bare replies to a middle tier, but
+   it cannot know the task state. The same "yes" after a trivial turn and after
+   an architecture turn gets the same tier.
 
-Two facts follow.
-
-1. The classifier is not wrong about the text. A bare approval really is
-   trivial text, and Jev says so confidently. Raising `minConfidence` cannot fix
-   this: it would only catch the 0.71 to 0.75 results.
-2. Editing the tier criteria text can steer bare replies to a middle tier (it
-   did in a trial), but it cannot know the task state. The same "yes" after a
-   trivial turn and after an architecture turn gets the same tier.
+A small live check on synthetic text is recorded in the
+[implementation plan](../plans/2026-11-07-conversation-aware-routing.md).
+Quantified evidence is deliberately left to the evaluation (Part B).
 
 ### Related defects this design must respect
 
@@ -208,8 +211,8 @@ When Part B sent context and Jev answered at or above `minConfidence`, Jev's tie
 stands: it is Jev's domain, and it judged the exchange. The floor applies when:
 
 - context was not sent (Part B disabled, first turn, or an override path), because
-  a confident answer on bare text is the failure the evidence shows (9 of 9
-  cheapest-tier results, four at 0.96 or above, were confident);
+  a confident answer on bare text is the failure the evidence shows (such
+  answers are confident);
 - Jev missed or answered below `minConfidence`.
 
 The trace shows which rule decided, and both tiers when they differ.
@@ -225,8 +228,8 @@ text the classifier would see after the inline-override strip at
 - a single line, with no code fence, URL or path-like token (contains `/` or `\`
   between non-space characters).
 
-Thresholds are my guess. 60 characters matches the "short prompt" class in the
-evidence; 10 words admits "looks right, go ahead and open the PR". Tune on the
+Thresholds are my guess. 60 characters is a starting point for "short prompt";
+10 words admits "looks right, go ahead and open the PR". Tune on the
 evaluation corpus.
 
 No word lists (they would be English-only). The test is intentionally broad: a
@@ -568,3 +571,10 @@ Owner decisions 1 to 10 are recorded above. What remains:
    acceptable in v1, pending #179?
 4. **Default-on later.** Out of scope here; worth a follow-up ADR only after the
    evaluation shows the benefit.
+5. **Floor direction after a planning turn.** The floor keeps the incumbent
+   tier, so an approval that follows a planning turn keeps the strong model for
+   the execution that follows. For stage-aware routing that is the opposite of
+   the goal. Part B is the part meant to fix it (Jev judges the work the reply
+   triggers); the floor is a safety net for undershooting and is opt-in and
+   independent of Part B. Should the floor be limited to cases where context was
+   not sent, or dropped from v1?

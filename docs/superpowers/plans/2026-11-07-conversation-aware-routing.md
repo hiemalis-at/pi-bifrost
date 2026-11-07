@@ -44,7 +44,7 @@ The inputs the spec implies but no task's main path exercises. Each has a pinnin
 5. Branch entries that are not plain messages (compaction, branch summary, custom, image content blocks, thinking blocks): must be skipped, never sent, never crash (Task 6).
 6. `bifrost/auto` and the physical input handler must read and write the same incumbent (Task 4).
 
-## Probe findings that shape this plan (live, synthetic content, `openrouter/typesafe/jev-1.14`, n=1 per case)
+## Probe findings that shape this plan (live, synthetic content, Pi-routed Jev classifier, n=1 per case)
 
 - Object `state` with extra keys is accepted and answered (no error), confirming the docs. This went through Pi's registry, not the direct `api.typesafe.ai` endpoint (`jev-1.13.0`); Task 9 repeats it there.
 - With the **existing** instruction text plus a short note about the keys, Jev largely ignored a heavy history: "Approved" stayed `light` (0.98 without context, 0.82 with it, confidence 0.76).
@@ -428,7 +428,7 @@ The inputs the spec implies but no task's main path exercises. Each has a pinnin
 ### Task 10: Release notes and upstream communication
 
 - [ ] **Step 1:** Update `CHANGELOG.md` with both features, both opt-in, the disclosure sentence, and the cache consequence.
-- [ ] **Step 2:** After implementation is done and the PRs are open, draft comments for upstream #161, #179 and #180 containing the evidence table (aggregate numbers only), the probe findings and the evaluation results. **Show them to the owner; post only on approval.**
+- [ ] **Step 2:** After implementation is done and the PRs are open, draft comments for upstream #161, #179 and #180 containing the problem statement, the probe findings and the evaluation results. **Show them to the owner; post only on approval.**
 
 ## Self-review
 
