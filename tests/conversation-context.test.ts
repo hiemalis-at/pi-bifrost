@@ -66,6 +66,44 @@ describe("redactSecrets", () => {
     });
   }
 
+  it("does not double count a secret already redacted inside a quoted value", () => {
+    assert.deepEqual(redactSecrets('password: "sk-abcdefgh1234"'), { text: 'password: "[redacted]"', count: 1 });
+    const flag = redactSecrets('mysql --password "sk-abcdefgh1234" -u x');
+    assert.equal(flag.count, 1);
+    assert.ok(!flag.text.includes("sk-abcdefgh1234"));
+  });
+
+  it("leaves a literal quoted [redacted] value unchanged", () => {
+    const input = '{"token": "[redacted]"}';
+    assert.deepEqual(redactSecrets(input), { text: input, count: 0 });
+  });
+
+  it("leaves a 40-character lowercase run without digits unchanged", () => {
+    const input = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn";
+    assert.deepEqual(redactSecrets(input), { text: input, count: 0 });
+  });
+
+  it("runs in linear time on long separator-heavy runs", () => {
+    const inputs = [
+      "a-".repeat(80000),
+      "a.".repeat(80000),
+      "a+".repeat(80000),
+      "http://".repeat(20000),
+      "x://a:".repeat(20000),
+      "password: \"".repeat(20000),
+      "Bearer ".repeat(20000),
+      "Bearer" + " ".repeat(100000),
+      "token".repeat(40000),
+      "-".repeat(160000),
+    ];
+    for (const input of inputs) {
+      const start = performance.now();
+      redactSecrets(input);
+      const ms = performance.now() - start;
+      assert.ok(ms < 500, `${input.slice(0, 12)}... took ${ms}ms`);
+    }
+  });
+
   it("keeps the rest of a URL after redacting its password", () => {
     assert.equal(
       redactSecrets("https://user:s3cr3tpw@github.com/org/repo.git").text,

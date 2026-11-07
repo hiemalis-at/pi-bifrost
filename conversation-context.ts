@@ -42,12 +42,13 @@ const REDACTED = "[redacted]";
 // Order matters: whole-block and header shapes first so later patterns do not
 // re-match their remains. "[redacted]" values are skipped by the assignment rule.
 const SECRET_NAME = "(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD)";
-const SECRET_VALUE = `(?!\\[redacted\\])(?:"[^"\\n]*"|'[^'\\n]*'|\\S+)`;
+// Skips values already redacted, bare or quoted, so one secret counts once.
+const SECRET_VALUE = `(?!["']?\\[redacted\\])(?:"[^"\\n]*"|'[^'\\n]*'|\\S+)`;
 
 const REDACTION_PATTERNS: readonly (readonly [RegExp, boolean?])[] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],
   // scheme://user:pass@host: only the password is replaced (second element: keep captured prefix).
-  [/\b([a-z][a-z0-9+.-]*:\/\/[^\s:\/@]+:)(?!\[redacted\]@)[^\s@\/]+@/gi, true],
+  [/\b([a-z][a-z0-9+.-]{0,15}:\/\/[^\s:\/@]+:)(?!\[redacted\]@)[^\s@\/]+@/gi, true],
   [/\bAuthorization[ \t]*:[ \t]*(?:Bearer|Basic)[ \t]+\S+/gi],
   // Bare bearer token; requires a digit so prose like "Bearer authentication" survives.
   [/\bBearer[ \t]+(?=[A-Za-z0-9._~+\/=-]*\d)[A-Za-z0-9._~+\/=-]{8,}/g],
