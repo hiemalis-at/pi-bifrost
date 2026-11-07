@@ -38,6 +38,23 @@ describe("redactSecrets", () => {
     ],
     ["API_KEY assignment", "set API_KEY=abc123 now", "abc123"],
     ["password assignment", "password: hunter2", "hunter2"],
+    ["quoted JSON password", '{"password": "hunter2"}', "hunter2"],
+    ["quoted JSON api_key", '{"api_key":"abc123def"}', "abc123def"],
+    ["single-quoted YAML secret", "client_secret: 'abc123def'", "abc123def"],
+    ["double-quoted value with spaces", 'API_KEY="abc def ghi" rest', "def ghi"],
+    ["single-quoted value with spaces", "password='abc def ghi' rest", "def ghi"],
+    ["github_pat token", "use github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123 now", "github_pat_11"],
+    ["gho_ token", "gho_abcdefghijklmnopqrstuvwxyz0123456789", "gho_abcdef"],
+    ["ghs_ token", "ghs_abcdefghijklmnopqrstuvwxyz0123456789", "ghs_abcdef"],
+    ["ghu_ token", "ghu_abcdefghijklmnopqrstuvwxyz0123456789", "ghu_abcdef"],
+    ["ASIA temporary key", "aws ASIAIOSFODNN7EXAMPLE end", "ASIAIOSFODNN7EXAMPLE"],
+    ["bare Bearer token", "curl -H 'x' Bearer eyJhbGciOi.abc123.def456 end", "eyJhbGciOi"],
+    ["Authorization Basic", "Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNz"],
+    ["--password flag", "mysql --password hunter2 -u root", "hunter2"],
+    ["--password= flag", "mysql --password=hunter2 -u root", "hunter2"],
+    ["--token flag", "cli --token abc123xyz run", "abc123xyz"],
+    ["--api-key quoted flag", 'cli --api-key "abc def" run', "abc def"],
+    ["URL credentials", "clone https://user:s3cr3tpw@github.com/org/repo.git", "s3cr3tpw"],
     ["high-entropy token", "tok aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5hI7jK9 end", "aB3dE5gH7jK9"],
   ];
   for (const [name, input, secret] of cases) {
@@ -49,6 +66,17 @@ describe("redactSecrets", () => {
     });
   }
 
+  it("keeps the rest of a URL after redacting its password", () => {
+    assert.equal(
+      redactSecrets("https://user:s3cr3tpw@github.com/org/repo.git").text,
+      "https://user:[redacted]@github.com/org/repo.git",
+    );
+  });
+
+  it("redacts quoted JSON without leaving fragments", () => {
+    assert.equal(redactSecrets('{"password": "hunter2", "ok": 1}').text, "{[redacted], \"ok\": 1}");
+  });
+
   it("keeps surrounding text", () => {
     assert.equal(redactSecrets("a password: hunter2\nnext line").text, "a [redacted]\nnext line");
   });
@@ -58,6 +86,10 @@ describe("redactSecrets", () => {
     "password policy",
     "API_KEY is documented",
     "the quick brown fox jumps over lazy dogs",
+    "set --token-limit 5 and --password-file x",
+    "see http://localhost:3000/path and https://github.com/org/repo",
+    "use Bearer authentication here",
+    "max_tokens: 100",
   ]) {
     it(`leaves near miss untouched: ${near}`, () => {
       assert.deepEqual(redactSecrets(near), { text: near, count: 0 });

@@ -41,13 +41,24 @@ const REDACTED = "[redacted]";
 
 // Order matters: whole-block and header shapes first so later patterns do not
 // re-match their remains. "[redacted]" values are skipped by the assignment rule.
-const REDACTION_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-  /\bAuthorization[ \t]*:[ \t]*Bearer[ \t]+\S+/gi,
-  /\bsk-(?:or-)?[A-Za-z0-9_-]{8,}/g,
-  /\bghp_[A-Za-z0-9]{16,}/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\b[A-Za-z0-9_]*(?:API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD)[ \t]*[=:][ \t]*(?!\[redacted\])\S+/gi,
+const SECRET_NAME = "(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD)";
+const SECRET_VALUE = `(?!\\[redacted\\])(?:"[^"\\n]*"|'[^'\\n]*'|\\S+)`;
+
+const REDACTION_PATTERNS: readonly (readonly [RegExp, boolean?])[] = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],
+  // scheme://user:pass@host: only the password is replaced (second element: keep captured prefix).
+  [/\b([a-z][a-z0-9+.-]*:\/\/[^\s:\/@]+:)(?!\[redacted\]@)[^\s@\/]+@/gi, true],
+  [/\bAuthorization[ \t]*:[ \t]*(?:Bearer|Basic)[ \t]+\S+/gi],
+  // Bare bearer token; requires a digit so prose like "Bearer authentication" survives.
+  [/\bBearer[ \t]+(?=[A-Za-z0-9._~+\/=-]*\d)[A-Za-z0-9._~+\/=-]{8,}/g],
+  [/\bsk-(?:or-)?[A-Za-z0-9_-]{8,}/g],
+  [/\bgithub_pat_[A-Za-z0-9_]{16,}/g],
+  [/\bgh[pousr]_[A-Za-z0-9]{16,}/g],
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g],
+  // CLI flags: --password x, --token=x. Before assignments so the whole flag is consumed.
+  [new RegExp(`--${SECRET_NAME}(?:[ \\t]+|=)${SECRET_VALUE}`, "gi")],
+  // NAME=value, NAME: value, "name": "value". Name must end in the keyword.
+  [new RegExp(`["']?\\b[A-Za-z0-9_]*${SECRET_NAME}["']?[ \\t]*[=:][ \\t]*${SECRET_VALUE}`, "gi")],
 ];
 
 const HIGH_ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{40,}/g;
@@ -70,10 +81,10 @@ function isHighEntropyToken(token: string): boolean {
 export function redactSecrets(text: string): { readonly text: string; readonly count: number } {
   let count = 0;
   let out = text;
-  for (const pattern of REDACTION_PATTERNS) {
-    out = out.replace(pattern, () => {
+  for (const [pattern, keepPrefix] of REDACTION_PATTERNS) {
+    out = out.replace(pattern, (_match: string, prefix?: string) => {
       count++;
-      return REDACTED;
+      return keepPrefix ? `${prefix}${REDACTED}@` : REDACTED;
     });
   }
   out = out.replace(HIGH_ENTROPY_CANDIDATE, (token) => {
