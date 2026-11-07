@@ -69,6 +69,7 @@ function makeCtx(
       ...registryOverride,
     },
     scopedModels: [],
+    sessionManager: { getBranch: () => [] },
   };
   return { ctx: ctx as never, calls };
 }

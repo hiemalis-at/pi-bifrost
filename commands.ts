@@ -8,6 +8,7 @@ import { DEFAULT_CLASSIFIER_CRITERIA, DEFAULT_RULES, PROMPT_ONLY_FIELDS, loadCon
 import type { CacheEntry } from "./cache.ts";
 import { cachePath, loadCache, saveCache, DEFAULT_MAX_ENTRIES, DEFAULT_THRESHOLD } from "./cache.ts";
 import type { ClassificationPipeline, ClassificationResult, ClassificationSource } from "./classification-pipeline.ts";
+import { buildClassifyOptions, type BuiltClassifyOptions } from "./conversation-options.ts";
 import { setupDebug, debug, debugMeasure } from "./debug.ts";
 import { runProbe, probeOptionsFromConfig, PROBE_PROMPT_TEXT } from "./probe.ts";
 import { setBifrostModeStatus, setBifrostStatus } from "./ux-status.ts";
@@ -51,6 +52,15 @@ export interface BifrostState {
   forceRegistryRefresh?: boolean;
   /** Recorded when detection fills an absent classifier.backend; status and test report read it (fix 12). */
   classifierDetection?: { backend: ClassifierBackend; reason: string };
+}
+
+/** Classify options from the session branch, same as the turn handler. Strip `advisoryContext` before `classify`. */
+function classifyOptionsFor(ctx: ExtensionContext, state: BifrostState): BuiltClassifyOptions {
+  return buildClassifyOptions({
+    config: state.config,
+    backend: state.effectiveClassifierBackend(state.config).backend,
+    branch: ctx.sessionManager.getBranch(),
+  });
 }
 
 export function log(
@@ -577,7 +587,9 @@ async function handleClassifierTest(ctx: ExtensionContext, state: BifrostState):
   const prompt = `Assess this small bounded request for tier selection. Verification nonce ${Date.now()}.`;
   let result;
   try {
-    result = await state.getPipeline(ctx).classify(prompt);
+    const pipeline = state.getPipeline(ctx);
+    const { advisoryContext: _advisory, ...options } = classifyOptionsFor(ctx, state);
+    result = await pipeline.classify(prompt, undefined, options);
   } finally {
     uiDone(ctx);
     syncBifrostModeStatus(ctx, state);
@@ -626,7 +638,9 @@ async function handleBenchmark(
   uiBusy(ctx, "Classifying benchmark prompt...");
   let classification;
   try {
-    classification = await state.getPipeline(ctx).classify(prompt);
+    const pipeline = state.getPipeline(ctx);
+    const { advisoryContext: _advisory, ...options } = classifyOptionsFor(ctx, state);
+    classification = await pipeline.classify(prompt, undefined, options);
   } finally {
     uiDone(ctx);
     syncBifrostModeStatus(ctx, state);
@@ -824,8 +838,13 @@ async function handlePreview(
   setBifrostStatus(ctx, "previewing prompt...", "accent");
   uiBusy(ctx, "Classifying preview prompt...");
   let classification;
+  // Kept whole for preview reporting: its advisoryContext is reported by size only, never sent.
+  let built: BuiltClassifyOptions = {};
   try {
-    classification = await state.getPipeline(ctx).classify(prompt);
+    const pipeline = state.getPipeline(ctx);
+    built = classifyOptionsFor(ctx, state);
+    const { advisoryContext: _advisory, ...options } = built;
+    classification = await pipeline.classify(prompt, undefined, options);
   } finally {
     uiDone(ctx);
     syncBifrostModeStatus(ctx, state);
