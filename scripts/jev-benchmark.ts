@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_RULES } from "../config.ts";
 import { classifyCompiled, compileRules } from "../routing.ts";
+import type { ConversationContext, ExchangeContext } from "../conversation-context.ts";
 import { resolveTypeSafeApiKey, buildTypeSafeRequest, decodeTypeSafeJudgment, TYPESAFE_SYSTEMONE_URL, TYPESAFE_MODEL } from "../typesafe-classifier.ts";
 export { TYPESAFE_SYSTEMONE_URL, TYPESAFE_MODEL } from "../typesafe-classifier.ts";
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -15,6 +16,12 @@ export type Tier = (typeof TIERS)[number];
 export type CorpusSplit = "dev" | "review";
 export type SelectedSplit = CorpusSplit | "all";
 
+/** Earlier conversation a scenario's prompt arrives into. `previousTier` is the tier the most recent exchange ran on (baseline arm only). */
+export interface ScenarioContext {
+  readonly exchanges: readonly ExchangeContext[];
+  readonly previousTier?: Tier;
+}
+
 export interface Scenario {
   readonly id: string;
   readonly prompt: string;
@@ -26,6 +33,7 @@ export interface Scenario {
   readonly expectedAlternative?: readonly Tier[];
   readonly tags?: readonly string[];
   readonly unresolved?: boolean;
+  readonly context?: ScenarioContext;
 }
 
 export interface JevJudgment {
@@ -79,9 +87,16 @@ export function baselineTier(prompt: string, rules: readonly BaselineRule[] = DE
   return tier === undefined ? { tier: defaultTier, source: "default" } : { tier, source: "regex_rule" };
 }
 
-export function buildRequest(prompt: string): Record<string, unknown> {
+/** Map a scenario's exchanges onto the real classifier context shape. Synthetic scenarios are never redacted or truncated. */
+export function toConversationContext(context: ScenarioContext): ConversationContext {
+  const chars = context.exchanges.reduce((sum, exchange) => sum + exchange.user.length + exchange.assistant.length + (exchange.tools?.length ?? 0), 0);
+  return { exchanges: context.exchanges, omittedEarlierTurns: false, chars, redactions: 0, truncated: false };
+}
+
+export function buildRequest(prompt: string, context?: ConversationContext): Record<string, unknown> {
   return buildTypeSafeRequest({
     prompt,
+    ...(context ? { context } : {}),
     tiers: [...TIERS],
     criteria: {
       quick: "Bounded, reversible, obvious work such as formatting, lookup, or a small mechanical edit. Not complex debugging, design, or security analysis.",
@@ -149,7 +164,7 @@ export class TypeSafeJevClient {
     this.#maxAttempts = Math.min(MAX_ATTEMPTS, Math.max(1, Math.floor(options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)));
   }
 
-  async evaluate(prompt: string): Promise<JevJudgment> {
+  async evaluate(prompt: string, context?: ConversationContext): Promise<JevJudgment> {
     const deadline = performance.now() + this.#timeoutMs;
     let lastFailure: EvaluationRow["error"] = "network";
 
@@ -163,7 +178,7 @@ export class TypeSafeJevClient {
         response = await this.#fetch(TYPESAFE_SYSTEMONE_URL, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${this.#apiKey}` },
-          body: JSON.stringify(buildRequest(prompt)),
+          body: JSON.stringify(buildRequest(prompt, context)),
           signal: controller.signal,
           redirect: "error",
         });
@@ -251,6 +266,185 @@ export async function runBenchmark(scenarios: readonly Scenario[], options: Benc
       return { id: scenario.id, split: scenario.split, baselineTier: baseline.tier, baselineSource: baseline.source, goldTier: scenario.goldTier, family: scenario.family, unresolved: scenario.unresolved, status: "error", error: errorCode(error), latencyMs: Math.round(performance.now() - started) };
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Multi-turn context arms (evaluation only; never changes routing).
+// ---------------------------------------------------------------------------
+
+export const ARMS = ["prompt-only", "retain-previous-tier", "prompt-plus-context"] as const;
+export type Arm = (typeof ARMS)[number];
+export type ClassifierArm = Exclude<Arm, "retain-previous-tier">;
+export const SINGLE_TURN_FAMILY = "single-turn";
+/** Answers below this confidence are treated as misses (incorrect, reported separately). */
+export const CONFIDENCE_FLOOR = 0.7;
+/** Pooled context-dependent accuracy of arm 3 must exceed the better of arms 1 and 2 by this many percentage points. */
+export const CONTEXT_MARGIN_POINTS = 15;
+export const CONFIDENCE_BUCKETS = ["<0.5", "0.5-0.7", "0.7-0.9", ">=0.9"] as const;
+export type ConfidenceBucket = (typeof CONFIDENCE_BUCKETS)[number];
+
+export interface ArmRequest {
+  readonly id: string;
+  readonly arm: ClassifierArm;
+  readonly prompt: string;
+  readonly context?: ConversationContext;
+}
+export type ArmClassifier = (request: ArmRequest) => Promise<JevJudgment>;
+
+export interface ArmRow {
+  readonly id: string;
+  readonly split: CorpusSplit;
+  readonly family: string;
+  readonly goldTier: Tier;
+  readonly unresolved?: boolean;
+  readonly arm: Arm;
+  readonly status: "ok" | "error";
+  readonly tier?: string;
+  readonly confidence?: number;
+  readonly error?: "auth" | "timeout" | "http" | "invalid_response" | "network";
+}
+
+export function isContextDependent(family: string): boolean {
+  return family !== SINGLE_TURN_FAMILY;
+}
+
+/** Arm 2: keep the tier the last exchange ran on; baseline routing when unknown. Offline, no classifier. */
+export function retainPreviousTier(scenario: Scenario): string {
+  return scenario.context?.previousTier ?? baselineTier(scenario.prompt).tier;
+}
+
+export function liveArmClassifier(client: TypeSafeJevClient): ArmClassifier {
+  return (request) => client.evaluate(request.prompt, request.context);
+}
+
+/** Fixture keys are `<scenario id>:<arm>`; values are raw TypeSafe response payloads. */
+export function fixtureArmClassifier(fixture: Readonly<Record<string, unknown>>): ArmClassifier {
+  return async (request) => parseJevResponse(fixture[`${request.id}:${request.arm}`]);
+}
+
+export interface ArmRunOptions {
+  readonly arms?: readonly Arm[];
+  readonly classify?: ArmClassifier;
+  readonly concurrency?: number;
+}
+
+export async function runArms(scenarios: readonly Scenario[], options: ArmRunOptions = {}): Promise<ArmRow[]> {
+  const arms = options.arms ?? ARMS;
+  if (!options.classify && arms.some((arm) => arm !== "retain-previous-tier")) throw new Error("a classifier is required for classifier arms");
+  const tasks = scenarios.flatMap((scenario) => arms.map((arm) => ({ scenario, arm })));
+  const concurrency = Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(options.concurrency ?? DEFAULT_CONCURRENCY)));
+  return boundedMap(tasks, concurrency, async ({ scenario, arm }): Promise<ArmRow> => {
+    const common = { id: scenario.id, split: scenario.split, family: scenario.family, goldTier: scenario.goldTier, unresolved: scenario.unresolved, arm };
+    if (arm === "retain-previous-tier") return { ...common, status: "ok", tier: retainPreviousTier(scenario) };
+    try {
+      const context = arm === "prompt-plus-context" && scenario.context ? toConversationContext(scenario.context) : undefined;
+      const judgment = await options.classify!({ id: scenario.id, arm, prompt: scenario.prompt, ...(context ? { context } : {}) });
+      return { ...common, status: "ok", tier: judgment.tier, confidence: judgment.confidence };
+    } catch (error) {
+      return { ...common, status: "error", error: errorCode(error) };
+    }
+  });
+}
+
+export interface ArmStats {
+  /** Scenarios scored (unresolved excluded). Misses count as incorrect. */
+  readonly n: number;
+  readonly correct: number;
+  readonly accuracy?: number;
+  /** Gold tier higher than chosen. */
+  readonly underRouted: number;
+  /** Gold tier lower than chosen. */
+  readonly overRouted: number;
+  readonly errors: number;
+  /** Answers below the confidence floor, treated as misses. */
+  readonly belowFloor: number;
+  /** errors + belowFloor. */
+  readonly misses: number;
+  readonly confidence?: Record<ConfidenceBucket, number>;
+}
+
+function confidenceBucket(confidence: number): ConfidenceBucket {
+  if (confidence < 0.5) return "<0.5";
+  if (confidence < 0.7) return "0.5-0.7";
+  if (confidence < 0.9) return "0.7-0.9";
+  return ">=0.9";
+}
+
+function armStats(rows: readonly ArmRow[]): ArmStats {
+  let correct = 0, underRouted = 0, overRouted = 0, errors = 0, belowFloor = 0;
+  const buckets: Record<ConfidenceBucket, number> = { "<0.5": 0, "0.5-0.7": 0, "0.7-0.9": 0, ">=0.9": 0 };
+  let withConfidence = 0;
+  for (const row of rows) {
+    if (row.status !== "ok" || row.tier === undefined) { errors++; continue; }
+    if (row.confidence !== undefined) { buckets[confidenceBucket(row.confidence)]++; withConfidence++; }
+    if (row.confidence !== undefined && row.confidence < CONFIDENCE_FLOOR) { belowFloor++; continue; }
+    if (row.tier === row.goldTier) { correct++; continue; }
+    const chosen = TIERS.indexOf(row.tier as Tier);
+    const gold = TIERS.indexOf(row.goldTier);
+    if (chosen >= 0 && gold > chosen) underRouted++;
+    else if (chosen >= 0) overRouted++;
+  }
+  return {
+    n: rows.length, correct, accuracy: rows.length ? correct / rows.length : undefined,
+    underRouted, overRouted, errors, belowFloor, misses: errors + belowFloor,
+    ...(withConfidence ? { confidence: buckets } : {}),
+  };
+}
+
+export interface ReleaseGuard {
+  /** Arm 3 strict accuracy >= arm 1 on the single-turn family. */
+  readonly singleTurnOk: boolean;
+  /** Pooled context-dependent arm 3 accuracy minus the better of arms 1 and 2, in percentage points. */
+  readonly contextBeatsBothBy?: number;
+  /** contextBeatsBothBy >= CONTEXT_MARGIN_POINTS. */
+  readonly contextOk: boolean;
+}
+
+export interface ArmReport {
+  readonly disclaimer: string;
+  readonly corpusVersion?: string;
+  readonly confidenceFloor: number;
+  readonly arms: readonly Arm[];
+  readonly n: number;
+  readonly perFamily: Record<string, { readonly contextDependent: boolean; readonly arms: Partial<Record<Arm, ArmStats>> }>;
+  readonly contextDependent: Partial<Record<Arm, ArmStats>>;
+  readonly singleTurn: Partial<Record<Arm, ArmStats>>;
+  readonly guard: ReleaseGuard;
+}
+
+/** Contains ids-derived counts, families and tiers only: never prompt or exchange text. */
+export function calculateArmReport(rows: readonly ArmRow[], corpusVersion?: string): ArmReport {
+  const scored = rows.filter((row) => !row.unresolved);
+  const arms = ARMS.filter((arm) => rows.some((row) => row.arm === arm));
+  const statsByArm = (subset: readonly ArmRow[]): Partial<Record<Arm, ArmStats>> => {
+    const out: Partial<Record<Arm, ArmStats>> = {};
+    for (const arm of arms) out[arm] = armStats(subset.filter((row) => row.arm === arm));
+    return out;
+  };
+  const perFamily: ArmReport["perFamily"] = {};
+  for (const family of [...new Set(scored.map((row) => row.family))].sort()) {
+    perFamily[family] = { contextDependent: isContextDependent(family), arms: statsByArm(scored.filter((row) => row.family === family)) };
+  }
+  const contextDependent = statsByArm(scored.filter((row) => isContextDependent(row.family)));
+  const singleTurn = statsByArm(scored.filter((row) => !isContextDependent(row.family)));
+
+  const rate = (stats: Partial<Record<Arm, ArmStats>>, arm: Arm): number | undefined => stats[arm]?.accuracy;
+  const stSingle = [rate(singleTurn, "prompt-plus-context"), rate(singleTurn, "prompt-only")];
+  const singleTurnOk = stSingle[0] !== undefined && stSingle[1] !== undefined && stSingle[0] >= stSingle[1] - 1e-9;
+  const ctx = rate(contextDependent, "prompt-plus-context");
+  const best = [rate(contextDependent, "prompt-only"), rate(contextDependent, "retain-previous-tier")].filter((value): value is number => value !== undefined);
+  const contextBeatsBothBy = ctx !== undefined && best.length === 2 ? Math.round((ctx - Math.max(...best)) * 100 * 1e6) / 1e6 : undefined;
+  return {
+    disclaimer: "Preliminary development evaluation only. Labels are development labels; this report does not authorize routing changes.",
+    corpusVersion,
+    confidenceFloor: CONFIDENCE_FLOOR,
+    arms,
+    n: new Set(rows.map((row) => row.id)).size,
+    perFamily,
+    contextDependent,
+    singleTurn,
+    guard: { singleTurnOk, contextBeatsBothBy, contextOk: contextBeatsBothBy !== undefined && contextBeatsBothBy >= CONTEXT_MARGIN_POINTS },
+  };
 }
 
 function percentile(values: number[], p: number): number | undefined {
@@ -380,6 +574,23 @@ export function calculateReport(rows: readonly EvaluationRow[], corpusVersion?: 
   };
 }
 
+function parseContext(value: unknown, line: number): ScenarioContext {
+  const invalid = () => new Error(`invalid context on line ${line}`);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.exchanges)) throw invalid();
+  const exchanges = record.exchanges.map((item): ExchangeContext => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw invalid();
+    const exchange = item as Record<string, unknown>;
+    if (typeof exchange.user !== "string" || typeof exchange.assistant !== "string") throw invalid();
+    if (exchange.tier !== undefined && typeof exchange.tier !== "string") throw invalid();
+    if (exchange.tools !== undefined && typeof exchange.tools !== "string") throw invalid();
+    return { user: exchange.user, assistant: exchange.assistant, ...(exchange.tier !== undefined ? { tier: exchange.tier } : {}), ...(exchange.tools !== undefined ? { tools: exchange.tools } : {}) };
+  });
+  if (record.previousTier !== undefined && !TIERS.includes(record.previousTier as Tier)) throw invalid();
+  return { exchanges, ...(record.previousTier !== undefined ? { previousTier: record.previousTier as Tier } : {}) };
+}
+
 function requiredString(record: Record<string, unknown>, key: string, line: number): string {
   const value = record[key];
   if (typeof value !== "string" || !value.trim()) throw new Error(`input line ${line} requires ${key}`);
@@ -402,10 +613,13 @@ export function parseJsonLines(text: string): Scenario[] {
     const family = requiredString(record, "family", line);
     const goldRationale = requiredString(record, "goldRationale", line);
     const ambiguity = requiredString(record, "ambiguity", line);
+    const context = record.context === undefined ? undefined : parseContext(record.context, line);
+    // The same short reply is legitimate in different conversations, so contextual prompts are unique per prompt+context.
+    const promptKey = context ? `${prompt}\u0000${JSON.stringify(context)}` : prompt;
     if (ids.has(id)) throw new Error(`duplicate id ${id}`);
-    if (prompts.has(prompt)) throw new Error(`duplicate prompt on line ${line}`);
+    if (prompts.has(promptKey)) throw new Error(`duplicate prompt on line ${line}`);
     ids.add(id);
-    prompts.add(prompt);
+    prompts.add(promptKey);
     if (!TIERS.includes(record.goldTier as Tier)) throw new Error(`invalid goldTier on line ${line}`);
     if (record.split !== "dev" && record.split !== "review") throw new Error(`invalid split on line ${line}`);
     const expectedAlternative = record.expectedAlternative;
@@ -421,6 +635,7 @@ export function parseJsonLines(text: string): Scenario[] {
       expectedAlternative: expectedAlternative as Tier[] | undefined,
       tags: Array.isArray(record.tags) && record.tags.every((tag) => typeof tag === "string") ? record.tags as string[] : undefined,
       unresolved: record.unresolved === true,
+      ...(context ? { context } : {}),
     });
   }
   if (!scenarios.length) throw new Error("corpus is empty");
@@ -432,7 +647,7 @@ export function selectSplit(scenarios: readonly Scenario[], split: SelectedSplit
 }
 
 function usage(): never {
-  console.error("Usage: npm run benchmark:jev -- [--baseline|--live|--fixture file] [input.jsonl|-] [--split dev|review|all] [--concurrency N] [--timeout-ms N]");
+  console.error("Usage: npm run benchmark:jev -- [--baseline|--live|--fixture file] [input.jsonl|-] [--split dev|review|all] [--concurrency N] [--timeout-ms N] [--arms all|prompt-only,retain-previous-tier,prompt-plus-context]");
   process.exit(2);
 }
 
@@ -443,15 +658,17 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   let split: SelectedSplit = "dev";
   let concurrency = DEFAULT_CONCURRENCY;
   let timeoutMs = DEFAULT_TIMEOUT_MS;
+  let armsArg: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--help") { console.log("Evaluation-only Jev benchmark. Preliminary development evidence; never changes routing.\nUsage: [--baseline|--live|--fixture file] [input.jsonl|-] [--split dev|review|all] [--concurrency N] [--timeout-ms N]"); return; }
+    if (arg === "--help") { console.log("Evaluation-only Jev benchmark. Preliminary development evidence; never changes routing.\nUsage: [--baseline|--live|--fixture file] [input.jsonl|-] [--split dev|review|all] [--concurrency N] [--timeout-ms N] [--arms all|<comma list>]\nWith --arms the multi-turn arm report (ids, families, counts, tiers only) is printed instead; --baseline then runs only retain-previous-tier offline."); return; }
     if (arg === "--baseline") mode = "baseline";
     else if (arg === "--live") mode = "live";
     else if (arg === "--fixture") { mode = "fixture"; fixturePath = argv[++i]; }
     else if (arg === "--split") split = argv[++i] as SelectedSplit;
     else if (arg === "--concurrency") concurrency = Number(argv[++i]);
     else if (arg === "--timeout-ms") timeoutMs = Number(argv[++i]);
+    else if (arg === "--arms") armsArg = argv[++i];
     else if (arg.startsWith("--")) usage();
     else if (!inputPath) inputPath = arg;
     else usage();
@@ -463,11 +680,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (!scenarios.length) throw new Error(`no scenarios in split ${split}`);
   const fixture = fixturePath ? JSON.parse(readFileSync(fixturePath, "utf8")) as Record<string, unknown> : undefined;
   const client = mode === "live" ? new TypeSafeJevClient({ timeoutMs }) : undefined;
-  const rows = await runBenchmark(scenarios, { mode, fixture, client, concurrency });
   let corpusVersion: string | undefined;
   if (inputPath && inputPath !== "-") {
     try { corpusVersion = readFileSync(join(dirname(inputPath), "VERSION"), "utf8").trim(); } catch { /* optional for ad-hoc corpora */ }
   }
+  if (armsArg !== undefined) {
+    const arms = armsArg === "all" ? [...ARMS] : armsArg.split(",") as Arm[];
+    if (!arms.length || arms.some((arm) => !ARMS.includes(arm))) usage();
+    if (mode === "baseline" && arms.some((arm) => arm !== "retain-previous-tier")) usage();
+    const classify = mode === "live" ? liveArmClassifier(client!) : mode === "fixture" ? fixtureArmClassifier(fixture ?? {}) : undefined;
+    const armRows = await runArms(scenarios, { arms, classify, concurrency });
+    const armReport = calculateArmReport(armRows, corpusVersion);
+    console.log(JSON.stringify({ ...armReport, rows: armRows }, null, 2));
+    console.error(`Jev arms (${split}): ${armReport.n} scenarios; arms ${armReport.arms.join(",")}; guard singleTurnOk=${armReport.guard.singleTurnOk} contextBeatsBothBy=${armReport.guard.contextBeatsBothBy ?? "n/a"} contextOk=${armReport.guard.contextOk}. Preliminary development evaluation only.`);
+    return;
+  }
+  const rows = await runBenchmark(scenarios, { mode, fixture, client, concurrency });
   const report = calculateReport(rows, corpusVersion);
   console.log(JSON.stringify({ ...report, rows }, null, 2));
   const accuracy = mode === "baseline" ? report.baselineAllRowsAccuracy : report.strictAccuracy;
