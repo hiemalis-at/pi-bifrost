@@ -7,6 +7,8 @@ import { ReliabilityStore, type ReliabilityIo } from "../reliability-store.ts";
 import { emptyReliabilityState, type ReliabilityState } from "../reliability.ts";
 import type { TypeSafeObservation } from "../classifier-metrics.ts";
 import { setupDebug } from "../debug.ts";
+import { CONTEXT_INSTRUCTIONS } from "../classifier-semantics.ts";
+import type { ConversationContext } from "../conversation-context.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +23,18 @@ const request: ClassifierRequest = {
     frontier: "complex work",
   },
 };
+
+const conversation: ConversationContext = {
+  exchanges: [
+    { user: "add retry to the fetcher", assistant: "I can add backoff in fetcher.ts. Shall I proceed?", tier: "general", tools: "edit x2" },
+    { user: "and docs?", assistant: "Sure." },
+  ],
+  omittedEarlierTurns: true,
+  chars: 90,
+  redactions: 1,
+  truncated: false,
+};
+const contextRequest: ClassifierRequest = { ...request, prompt: "yes", context: conversation };
 
 function probabilities(choice: string): Record<string, number> {
   const base: Record<string, number> = { quick: 0.1, general: 0.1, frontier: 0.1 };
@@ -136,6 +150,64 @@ describe("pi-native classifier transport", () => {
     assert.ok(question.instructions.includes("tier"));
     assert.equal(question.criteria.quick, "bounded work");
     assert.equal(question.criteria.general, "normal work Not for: trivial edits Examples: feature work");
+  });
+
+  it("request without context sends { prompt } and the unchanged instruction", async () => {
+    const h = harness({ listed: [model()], results: [answer()] });
+    const judgment = await createPiNativeClassifier({ registry: h.registry })(request);
+    assert.deepEqual(h.contexts[0].state, { prompt: request.prompt });
+    const question = h.contexts[0].questions.tier as { instructions: string };
+    assert.equal(question.instructions, "Which model tier best fits this coding-agent request? Judge task complexity and consequence, not stated preference or price.");
+    assert.equal("contextSent" in (judgment ?? {}), false);
+  });
+
+  it("request with context sends current_prompt, previous_exchanges, omitted_earlier_turns and CONTEXT_INSTRUCTIONS", async () => {
+    const h = harness({ listed: [model()], results: [answer()] });
+    const judgment = await createPiNativeClassifier({ registry: h.registry })(contextRequest);
+    assert.deepEqual(h.contexts[0].state, {
+      current_prompt: "yes",
+      previous_exchanges: [
+        { user: "add retry to the fetcher", assistant: "I can add backoff in fetcher.ts. Shall I proceed?", tier: "general", tools: "edit x2" },
+        { user: "and docs?", assistant: "Sure." },
+      ],
+      omitted_earlier_turns: true,
+    });
+    const question = h.contexts[0].questions.tier as { instructions: string };
+    assert.equal(question.instructions, CONTEXT_INSTRUCTIONS);
+    assert.equal(judgment?.contextSent, true);
+  });
+
+  it("sends nothing else with context", async () => {
+    const h = harness({ listed: [model()], results: [answer()] });
+    await createPiNativeClassifier({ registry: h.registry })(contextRequest);
+    const state = h.contexts[0].state as { previous_exchanges: Array<Record<string, unknown>> };
+    assert.deepEqual(Object.keys(state).sort(), ["current_prompt", "omitted_earlier_turns", "previous_exchanges"]);
+    for (const exchange of state.previous_exchanges) {
+      for (const key of Object.keys(exchange)) assert.ok(["user", "assistant", "tier", "tools"].includes(key), key);
+    }
+  });
+
+  it("keeps exchange and prompt text out of context-request debug traces", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bifrost-native-ctx-trace-"));
+    const path = join(dir, "trace.jsonl");
+    setupDebug({ enabled: true, path }, dir);
+    try {
+      const sentinel: ConversationContext = { ...conversation, exchanges: [{ user: "user-sentinel-xyz", assistant: "assistant-sentinel-xyz", tools: "tools-sentinel-xyz" }] };
+      const h = harness({ listed: [model()], results: [answer()] });
+      await createPiNativeClassifier({ registry: h.registry, debug: true })({ ...request, prompt: "prompt-sentinel-xyz", context: sentinel });
+      let text = "";
+      for (let i = 0; i < 100; i++) {
+        if (existsSync(path)) text = readFileSync(path, "utf8");
+        if (text.includes('"event":"finish"')) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.match(text, /"event":"start"/);
+      assert.match(text, /context_turns/);
+      assert.doesNotMatch(text, /sentinel-xyz/);
+    } finally {
+      setupDebug({ enabled: false, path }, dir);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("bounds catalog discovery by the same deadline and signals cancellation", async () => {
