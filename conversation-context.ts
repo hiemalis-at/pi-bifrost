@@ -40,11 +40,10 @@ export const PER_ASSISTANT_CAP = 2000;
 const REDACTED = "[redacted]";
 
 // Order matters: whole-block and header shapes first so later patterns do not
-// re-match their remains. "[redacted]" values are skipped by the assignment rule.
+// re-match their remains.
 const SECRET_NAME = "(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD)";
-// Skips values that are exactly "[redacted]" (bare or quoted) so one secret counts once;
-// a value that merely starts with it is still consumed whole.
-const SECRET_VALUE = `(?!"\\[redacted\\]"|'\\[redacted\\]'|\\[redacted\\](?!\\w))(?:"[^"\\n]*"|'[^'\\n]*'|\\S+)`;
+// Always consumes the whole value, even one already containing "[redacted]": fail closed.
+const SECRET_VALUE = `(?:"[^"\\n]*"|'[^'\\n]*'|\\S+)`;
 
 const REDACTION_PATTERNS: readonly (readonly [RegExp, boolean?])[] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],
@@ -80,6 +79,11 @@ function isHighEntropyToken(token: string): boolean {
   return /\d/.test(token) && /[A-Za-z]/.test(token) && shannonEntropy(token) >= 3.5;
 }
 
+/**
+ * Replace secret shapes with `[redacted]`. The count is the number of replacements made and
+ * may over-count when rules overlap (an `sk-` key inside a `password:` value counts twice, a
+ * literal `[redacted]` value is re-counted); callers treat it as redacted = count > 0.
+ */
 export function redactSecrets(text: string): { readonly text: string; readonly count: number } {
   let count = 0;
   let out = text;

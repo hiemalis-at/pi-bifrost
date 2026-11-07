@@ -66,31 +66,51 @@ describe("redactSecrets", () => {
     });
   }
 
-  it("does not double count a secret already redacted inside a quoted value", () => {
-    assert.deepEqual(redactSecrets('password: "sk-abcdefgh1234"'), { text: 'password: "[redacted]"', count: 1 });
-    const flag = redactSecrets('mysql --password "sk-abcdefgh1234" -u x');
-    assert.equal(flag.count, 1);
-    assert.ok(!flag.text.includes("sk-abcdefgh1234"));
-  });
-
-  it("does not leak the rest of a quoted value that starts with a redacted secret", () => {
-    const first = redactSecrets('password: "sk-abcdefgh1234 hunter2"');
-    assert.ok(!first.text.includes("hunter2"), first.text);
-    assert.ok(first.count >= 1);
-    for (const [input, leak] of [
-      ['token: "[redacted]s3cret"', "s3cret"],
-      ['password: "[redacted] hunter2"', "hunter2"],
-      ["password: [redacted]hunter2", "hunter2"],
-    ]) {
+  it("redacts an assignment whose value is an sk- secret (count may over-count)", () => {
+    for (const input of ['password: "sk-abcdefgh1234"', 'mysql --password "sk-abcdefgh1234" -u x']) {
       const out = redactSecrets(input);
-      assert.ok(!out.text.includes(leak), `${input} -> ${out.text}`);
+      assert.ok(!out.text.includes("sk-abcdefgh1234"), `${input} -> ${out.text}`);
       assert.ok(out.count >= 1);
     }
   });
 
-  it("leaves a literal quoted [redacted] value unchanged", () => {
-    const input = '{"token": "[redacted]"}';
-    assert.deepEqual(redactSecrets(input), { text: input, count: 0 });
+  // Secret-named assignments always redact the whole value, even one that already contains [redacted].
+  const leakCases: Array<[string, string]> = [
+    ["password: sk-abcdefgh1234.hunter2", "hunter2"],
+    ["password: sk-abcdefgh1234!hunter2", "hunter2"],
+    ["password: sk-abcdefgh1234/hunter2", "hunter2"],
+    ["password: [redacted].hunter2", "hunter2"],
+    ["password: [redacted]-hunter2", "hunter2"],
+    ["password: [redacted]:hunter2", "hunter2"],
+    ["password: [redacted]hunter2", "hunter2"],
+    ['token: "[redacted]s3cret"', "s3cret"],
+    ['password: "[redacted] hunter2"', "hunter2"],
+    ['password: "sk-abcdefgh1234 hunter2"', "hunter2"],
+  ];
+  for (const [input, leak] of leakCases) {
+    it(`does not leak the rest of an assignment value: ${input}`, () => {
+      const out = redactSecrets(input);
+      assert.ok(!out.text.includes(leak), `${input} -> ${out.text}`);
+      assert.ok(out.count >= 1);
+    });
+  }
+
+  it("is idempotent", () => {
+    const inputs = [
+      ...leakCases.map(([input]) => input),
+      'password: "sk-abcdefgh1234"',
+      'mysql --password "sk-abcdefgh1234" -u x',
+      '{"token": "[redacted]"}',
+      "https://user:s3cr3tpw@github.com/org/repo.git",
+    ];
+    for (const input of inputs) {
+      const once = redactSecrets(input).text;
+      assert.equal(redactSecrets(once).text, once, input);
+    }
+  });
+
+  it("re-redacts a literal quoted [redacted] value (fail closed)", () => {
+    assert.deepEqual(redactSecrets('{"token": "[redacted]"}'), { text: "{[redacted]}", count: 1 });
   });
 
   it("leaves a 40-character lowercase run without digits unchanged", () => {
@@ -110,6 +130,8 @@ describe("redactSecrets", () => {
       "Bearer" + " ".repeat(100000),
       "token".repeat(40000),
       "-".repeat(160000),
+      "password: \"".repeat(Math.ceil(100000 / 11)),
+      "[redacted]".repeat(10000),
     ];
     for (const input of inputs) {
       const start = performance.now();
