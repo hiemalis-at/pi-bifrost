@@ -50,6 +50,20 @@ export interface PiNativeConfig {
   };
 }
 
+export const DEFAULT_CONTEXT_TURNS = 3;
+export const DEFAULT_CONTEXT_MAX_CHARS = 6000;
+
+/** Opt-in bounded conversation context sent to direct classifier backends only. Disabled by default. */
+export interface ContextConfig {
+  enabled?: boolean;
+  /** Previous exchanges to include. Integer 1 to 10. Default 3. */
+  turns?: number;
+  /** Character budget for the context. Integer 500 to 16000. Default 6000. */
+  maxChars?: number;
+  includeToolSummary?: boolean;
+  includeTiers?: boolean;
+}
+
 export interface ClassifierConfig {
   enabled?: boolean;
   backend?: ClassifierBackend;
@@ -66,6 +80,7 @@ export interface ClassifierConfig {
   piNative?: PiNativeConfig;
   minConfidence?: number;
   fallback?: "prompt" | "regex";
+  context?: ContextConfig;
 }
 
 export interface BifrostConfig {
@@ -233,6 +248,18 @@ export function validateConfig(
   const directBackend = classifier?.backend === CLASSIFIER_BACKEND_IDS.typesafe || classifier?.backend === CLASSIFIER_BACKEND_IDS.piNative;
   const directLabel = classifier?.backend === CLASSIFIER_BACKEND_IDS.piNative ? "PiNative" : "TypeSafe";
   const directKey = classifier?.backend === CLASSIFIER_BACKEND_IDS.piNative ? "piNative" : "typesafe";
+  const context = classifier?.context;
+  if (context !== undefined) {
+    if (context.turns !== undefined && (!Number.isInteger(context.turns) || context.turns < 1 || context.turns > 10)) {
+      issues.push({ severity: "error", message: `Classifier context turns must be an integer from 1 to 10, got ${context.turns}.` });
+    }
+    if (context.maxChars !== undefined && (!Number.isInteger(context.maxChars) || context.maxChars < 500 || context.maxChars > 16_000)) {
+      issues.push({ severity: "error", message: `Classifier context maxChars must be an integer from 500 to 16000, got ${context.maxChars}.` });
+    }
+    if (context.enabled === true && classifier?.backend === CLASSIFIER_BACKEND_IDS.prompt) {
+      issues.push({ severity: "warning", message: "Classifier context is enabled with the prompt backend; context is only sent to direct backends (typesafe, pi-native)." });
+    }
+  }
   if (classifier?.backend === CLASSIFIER_BACKEND_IDS.typesafe) {
     if (classifier.typesafe?.model !== undefined && classifier.typesafe.model !== TYPE_SAFE_MODEL) {
       issues.push({ severity: "error", message: `TypeSafe classifier model must be exactly "${TYPE_SAFE_MODEL}".` });

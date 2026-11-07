@@ -1,0 +1,27 @@
+{
+  "$schema": "../schema.json",
+  "enabled": true,
+  "default": "worker",
+  "models": {
+    "planner": ["provider/strong-reasoning-model"],
+    "worker": ["provider/fast-coding-model"]
+  },
+  "classifier": {
+    "enabled": true,
+    "backend": "pi-native",
+    "piNative": { "model": "typesafe/jev-latest" },
+    "minConfidence": 0.8,
+    "fallback": "regex",
+    "context": {
+      "enabled": true,
+      "turns": 3,
+      "maxChars": 6000,
+      "includeToolSummary": true,
+      "includeTiers": true
+    },
+    "criteria": {
+      "planner": "Planning, design, orchestration, review and decisions between options. Not carrying out an agreed plan.",
+      "worker": "Carrying out an agreed plan: implementation, edits, tests, mechanical follow-through. Not choosing between designs."
+    }
+  }
+}

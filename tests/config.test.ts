@@ -217,6 +217,44 @@ describe("validateConfig", () => {
     assert.ok(bad.some((issue) => issue.message.includes("Unknown classifier backend")));
   });
 
+  it("context turns must be an integer from 1 to 10", () => {
+    for (const turns of [0, 11, 1.5]) {
+      const issues = validateConfig({ ...baseConfig, classifier: { backend: "pi-native", context: { enabled: true, turns } } });
+      assert.ok(issues.some((issue) => issue.severity === "error" && issue.message.includes("context turns must be an integer from 1 to 10")), `turns ${turns}`);
+    }
+    const ok = validateConfig({ ...baseConfig, classifier: { backend: "pi-native", context: { enabled: true, turns: 3 } } });
+    assert.equal(ok.filter((issue) => issue.message.includes("context")).length, 0);
+  });
+
+  it("context maxChars must be an integer from 500 to 16000", () => {
+    for (const maxChars of [499, 16001, 1000.5]) {
+      const issues = validateConfig({ ...baseConfig, classifier: { backend: "pi-native", context: { enabled: true, maxChars } } });
+      assert.ok(issues.some((issue) => issue.severity === "error" && issue.message.includes("context maxChars must be an integer from 500 to 16000")), `maxChars ${maxChars}`);
+    }
+    for (const maxChars of [500, 6000, 16000]) {
+      const ok = validateConfig({ ...baseConfig, classifier: { backend: "pi-native", context: { enabled: true, maxChars } } });
+      assert.equal(ok.filter((issue) => issue.message.includes("context")).length, 0, `maxChars ${maxChars}`);
+    }
+  });
+
+  it("context block absent produces no issues", () => {
+    const issues = validateConfig({ ...baseConfig, classifier: { backend: "pi-native" } });
+    assert.equal(issues.filter((issue) => issue.message.includes("context")).length, 0);
+    const none = validateConfig({ ...baseConfig, classifier: { backend: "pi-native", context: {} } });
+    assert.equal(none.filter((issue) => issue.message.includes("context")).length, 0);
+  });
+
+  it("context enabled with the prompt backend is a warning that context is only sent to direct backends", () => {
+    const issues = validateConfig({ ...baseConfig, classifier: { backend: "prompt", context: { enabled: true } } });
+    const warning = issues.find((issue) => issue.message.includes("context") && issue.message.includes("direct"));
+    assert.ok(warning);
+    assert.equal(warning.severity, "warning");
+    const disabled = validateConfig({ ...baseConfig, classifier: { backend: "prompt", context: { enabled: false } } });
+    assert.equal(disabled.filter((issue) => issue.message.includes("context")).length, 0);
+    const direct = validateConfig({ ...baseConfig, classifier: { backend: "pi-native", context: { enabled: true } } });
+    assert.equal(direct.filter((issue) => issue.message.includes("context")).length, 0);
+  });
+
   it("validates the piNative transport block like typesafe", () => {
     const ok = validateConfig({
       ...baseConfig,

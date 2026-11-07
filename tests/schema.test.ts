@@ -25,3 +25,33 @@ describe("shipped JSON artifacts", () => {
     }
   });
 });
+
+describe("classifier.context schema", () => {
+  type SchemaNode = { additionalProperties?: boolean; properties?: Record<string, { type?: string; default?: unknown; minimum?: number; maximum?: number }> };
+  const schema = readJson("schema.json") as { definitions: { ClassifierConfig: SchemaNode } };
+  const context = schema.definitions.ClassifierConfig.properties?.context as SchemaNode | undefined;
+
+  it("schema accepts the context block", () => {
+    assert.ok(context, "ClassifierConfig.context is defined");
+    const example = readJson("examples/classifier-conversation-aware.json") as { classifier: { context: Record<string, unknown> } };
+    for (const key of Object.keys(example.classifier.context)) {
+      assert.ok(context.properties?.[key], `example key ${key} is declared`);
+    }
+    assert.equal(context.properties?.enabled?.type, "boolean");
+    assert.equal(context.properties?.enabled?.default, false);
+    assert.equal(context.properties?.turns?.type, "integer");
+    assert.equal(context.properties?.turns?.minimum, 1);
+    assert.equal(context.properties?.turns?.maximum, 10);
+    assert.equal(context.properties?.maxChars?.type, "integer");
+    assert.equal(context.properties?.maxChars?.minimum, 500);
+    assert.equal(context.properties?.maxChars?.maximum, 16000);
+    assert.equal(context.properties?.includeToolSummary?.type, "boolean");
+    assert.equal(context.properties?.includeTiers?.type, "boolean");
+  });
+
+  it("schema rejects unknown keys inside it", () => {
+    assert.ok(context);
+    assert.equal(context.additionalProperties, false);
+    assert.deepEqual(Object.keys(context.properties ?? {}).sort(), ["enabled", "includeTiers", "includeToolSummary", "maxChars", "turns"]);
+  });
+});

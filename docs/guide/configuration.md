@@ -100,6 +100,35 @@ A rule value containing `/` binds one exact provider/model and skips tier select
 
 Use direct bindings when role or task policy already knows the exact model. Tier strategies do not apply to direct-model rules.
 
+## Conversation context for the direct classifier
+
+By default the classifier judges each prompt on its own text. A short reply such as "approve the plan" then looks trivial, although the work it triggers may not be. The opt-in `classifier.context` block sends bounded recent conversation to the direct classifier (`typesafe` or `pi-native`) so it can judge the work a reply triggers. It is disabled by default and the prompt backend never receives it.
+
+| Key | Default | Allowed | Meaning |
+|-----|---------|---------|---------|
+| `classifier.context.enabled` | `false` | boolean | Send context with each direct classification. |
+| `classifier.context.turns` | `3` | integer 1 to 10 | Most recent exchanges to include. |
+| `classifier.context.maxChars` | `6000` | integer 500 to 16000 | Character budget, newest exchanges first. |
+| `classifier.context.includeToolSummary` | `true` | boolean | Tool names and counts per exchange. Never tool arguments or results. |
+| `classifier.context.includeTiers` | `true` | boolean | The tier each previous turn ran on, when it can be determined. |
+
+Enabling it with `backend: "prompt"` is reported as a warning because nothing is sent. Stage policy such as "strong model plans, cheaper model executes" lives in your tier criteria, written by role:
+
+```json
+{
+  "classifier": {
+    "backend": "pi-native",
+    "context": { "enabled": true },
+    "criteria": {
+      "planner": "Planning, design, orchestration, review and decisions between options. Not carrying out an agreed plan.",
+      "worker": "Carrying out an agreed plan: implementation, edits, tests, mechanical follow-through. Not choosing between designs."
+    }
+  }
+}
+```
+
+A complete file is in [`examples/classifier-conversation-aware.json`](../../examples/classifier-conversation-aware.json). Enabling the block sends conversation text to the classifier provider, the same recipient as the prompt.
+
 ## Tier-resolution order
 
 For a normal message with routing on and nothing pinned, routing considers:
