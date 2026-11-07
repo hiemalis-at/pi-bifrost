@@ -378,3 +378,39 @@ test("multi-turn mini fixture covers each family kind and stays out of the check
   assert.equal(corpus.length, manifest.counts.total);
   assert.equal(corpus.some((item) => item.id.startsWith("mt-mini")), false);
 });
+
+test("multi-turn corpus is well-formed", () => {
+  const text = readFileSync("tests/corpus/jev/multi-turn.jsonl", "utf8");
+  const lines = text.split(/\r?\n/).filter((line) => line.trim());
+  const scenarios = parseJsonLines(text);
+  assert.equal(scenarios.length, lines.length);
+  assert.equal(new Set(scenarios.map((item) => item.id)).size, scenarios.length);
+  const families = ["approval-after-plan", "approval-after-small-fix", "bare-option", "fix-it", "continue", "use-second-approach", "try-again", "short-task-after-trivial", "short-task-after-heavy", "single-turn"];
+  for (const family of families) assert.ok(scenarios.filter((item) => item.family === family).length >= 8, family);
+  for (const tier of ["quick", "general", "frontier"] as const) {
+    const share = scenarios.filter((item) => item.goldTier === tier).length / scenarios.length;
+    assert.ok(share >= 0.25 && share <= 0.42, `${tier} share ${share}`);
+  }
+  const contextual = scenarios.filter((item) => item.family !== "single-turn");
+  const differing = contextual.filter((item) => item.context?.previousTier !== item.goldTier);
+  assert.ok(differing.length / contextual.length >= 0.4, `previousTier differs on ${differing.length}/${contextual.length}`);
+  for (const family of families.filter((name) => name !== "single-turn")) {
+    const tiers = new Set(contextual.filter((item) => item.family === family).map((item) => item.goldTier));
+    assert.ok(tiers.size >= 2, family);
+    assert.ok(contextual.filter((item) => item.family === family && item.context?.previousTier !== item.goldTier).length >= 3, family);
+  }
+  for (const item of contextual) {
+    assert.ok(item.prompt.length <= 80, item.id);
+    if (item.expectedAlternative) assert.notEqual(item.ambiguity, "none", item.id);
+  }
+  const forbidden = /sk-|ghp_|AKIA|BEGIN .*PRIVATE KEY|https?:\/\//i;
+  for (const item of scenarios) {
+    const exchanges = item.context?.exchanges ?? [];
+    const texts = [item.prompt, item.goldRationale, ...exchanges.flatMap((exchange) => [exchange.user, exchange.assistant, exchange.tools ?? ""])];
+    for (const value of texts) assert.doesNotMatch(value, forbidden, item.id);
+  }
+  const manifest = JSON.parse(readFileSync("tests/corpus/jev/manifest.json", "utf8")) as { counts: { total: number } };
+  const corpus = parseJsonLines(readFileSync("tests/corpus/jev/scenarios.jsonl", "utf8"));
+  assert.equal(corpus.length, manifest.counts.total);
+  assert.equal(scenarios.some((item) => corpus.some((single) => single.id === item.id)), false);
+});

@@ -41,6 +41,7 @@ Multi-turn scenarios live in a separate file, `multi-turn.jsonl`, so the single-
 - The same short reply (for example "Yes, go ahead.") may appear in several records with different contexts; an identical prompt plus identical context is still rejected as a duplicate.
 - Context-dependent families: `approval-after-plan`, `approval-after-small-fix`, `bare-option`, `fix-it`, `continue`, `use-second-approach`, `try-again`, `short-task-after-trivial`, `short-task-after-heavy`. The control family is `single-turn` (self-contained prompts with an irrelevant history). The report treats every family except `single-turn` as context-dependent.
 - Keep text synthetic. Never add real session text, source files, tool output or secrets.
+- Current `multi-turn.jsonl` (90 records; dev/review per family): dev 72, review 18. `approval-after-plan` 7/2, `approval-after-small-fix` 7/2, `bare-option` 7/2, `fix-it` 8/1, `continue` 7/2, `use-second-approach` 7/2, `try-again` 7/2, `short-task-after-trivial` 7/2, `short-task-after-heavy` 8/1, `single-turn` 7/2 (9 per family). Tiers: quick 30, general 30, frontier 30; 48 of 81 context-dependent records have `previousTier` different from `goldTier`.
 
 The harness only ever prints ids, families, counts and tiers. It never prints prompt or exchange text.
 
