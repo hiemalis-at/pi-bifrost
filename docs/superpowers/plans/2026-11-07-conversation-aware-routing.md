@@ -12,7 +12,7 @@
 
 ## Preconditions (not tasks)
 
-- `AGENTS.md`: "proposed ADRs are not implementation approval". An ADR covering Part A and Part B must be accepted upstream before Task 1 starts. Drafting it is a separate request; ADR drafts are not committed unless asked.
+- `AGENTS.md`: "proposed ADRs are not implementation approval". The ADR (`docs/adr/0021-conversation-aware-routing.md`, number provisional) must be accepted upstream before Task 1 starts. Task 0 (install and baseline) may run earlier.
 - Comment on upstream #161, #179, #180 **after implementation is done** (owner decision, revision 3 follow-up). Do not post earlier.
 - #179 (cache semantic safety) may change the cache API. Tasks 3 and 8 touch only the "skip cache read/write" decision; if #179 lands first, follow its API.
 - Work on a branch from `main` per PR: Part A = Tasks 1-5, Part B = Tasks 6-8, evaluation = Task 9.
@@ -410,7 +410,7 @@ The inputs the spec implies but no task's main path exercises. Each has a pinnin
 
 **Interfaces:**
 - Consumes: `ConversationContext`, `buildConversationContext` types (Task 6), `applyFloor` (Task 2).
-- Produces: scenario field `context?: { exchanges: ExchangeContext[]; incumbent?: string }`; four arms as in the spec (prompt only; prompt plus floor; prompt plus context; prompt plus context plus floor); per-family accuracy, under-routing, over-routing, miss rate, floor-lift rate, and requests whose decisive text falls beyond the input bound.
+- Produces: scenario field `context?: { exchanges: ExchangeContext[]; incumbent?: string }`; four arms as in the spec (prompt only; prompt plus floor; prompt plus context; prompt plus context plus floor); per-family accuracy, under-routing, over-routing, miss rate, confidence distribution of context-fed answers, floor-lift rate, and requests whose decisive text falls beyond the input bound.
 
 - [ ] **Step 1: Write failing tests** in `tests/jev-benchmark.test.ts`: scenario parsing accepts `context`; arm 2 applies the floor to a fake classifier's answers; arm 4 lets a context-fed confident answer stand; the report lists families separately and contains no scenario text.
 - [ ] **Step 2:** Run `node --test --experimental-strip-types tests/jev-benchmark.test.ts`. Expected: FAIL.
@@ -434,4 +434,4 @@ The inputs the spec implies but no task's main path exercises. Each has a pinnin
 
 - **Spec coverage:** Part A behavior, qualification, incumbent, pipeline position, cache rule, visibility, edge cases → Tasks 1-5 (the "incumbent tier no longer exists" case is in Task 4; "order missing a tier" in Task 1; consecutive bare replies and resume in Tasks 3-4). Part B what-is-sent, request shape, disclosure, cache, visibility, failure, overrides, subagents → Tasks 6-8. Evaluation, release guard, object-state verification → Task 9. Governance and delivery order → Preconditions and Task 10. Owner decisions 1-10 are in Global Constraints. The spec's `order may be omitted` is changed deliberately (Task 1 edits the spec).
 - **Type consistency:** `ClassifyOptions`, `ContinuationReport`, `FloorRule`, `ConversationContext`, `ExchangeContext`, `contextSent` are defined once (Tasks 2, 3, 6) and used under those names in Tasks 4, 5, 7, 8, 9.
-- **Open for the owner before Task 8 ships:** the probe showed context-aware answers at confidence 0.48-0.57, below the configured 0.7 floor, so under owner decision 9 most of them fall through to the floor. Whether to give the context path its own `minConfidence` is not in the spec and is not in this plan.
+- **Confidence (owner decision, revision 3 follow-up):** one `classifier.minConfidence` for everything; no second threshold. The probe's low confidences (0.48-0.57) may be an artifact of the synthetic probes, so Task 9 reports the confidence distribution and miss rate of context-fed answers per family, and the result is recorded in the PR and ADR for a later decision.
