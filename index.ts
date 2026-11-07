@@ -318,14 +318,13 @@ export default function bifrostExtension(pi: ExtensionAPI) {
     pipeline = undefined;
   }
 
-  /** Per-call classify options from the session branch; the advisory context is never sent. */
+  /** Per-call classify options from the session branch. No `advisory`: only preview reads advisory context. */
   function classifyOptionsFor(ctx: ExtensionContext): ClassifyOptions {
-    const { advisoryContext: _advisory, ...options } = buildClassifyOptions({
+    return buildClassifyOptions({
       config: state.config,
       backend: effectiveBackendOf(state.config, detectionEngine).backend,
       branch: ctx.sessionManager.getBranch(),
     });
-    return options;
   }
 
   // Mutable state shared with command handlers.
@@ -485,7 +484,7 @@ export default function bifrostExtension(pi: ExtensionAPI) {
           }
           debug("virtual", "select", { tier: classification.tier, model: modelKey(model), source: classification.kind === "classified" ? classification.source : "fallback", ...classifierIdentity, skipped: resolved.skipped });
           saveClassifierDecision(prompt, classification);
-          log(ctx, `Bifrost auto: ${classification.tier} → ${modelKey(model)} (${classification.kind === "classified" ? classification.source : "fallback"}${resolved.fallbackReason ? `; ${resolved.fallbackReason}` : ""}${resolved.skipped.length > 0 ? `; ${resolved.skipped.length} skipped: ${resolved.skipped.map((s) => s.key).join(", ")}` : ""})`);
+          log(ctx, `Bifrost auto: ${classification.tier} → ${modelKey(model)} (${classification.kind === "classified" ? classification.source : "fallback"}${resolved.fallbackReason ? `; ${resolved.fallbackReason}` : ""}${resolved.skipped.length > 0 ? `; ${resolved.skipped.length} skipped: ${resolved.skipped.map((s) => s.key).join(", ")}` : ""})${classification.context?.sent ? " +context" : ""}`);
           return model;
         },
         onDispatch: (model, thinkingLevel, intent) => {
@@ -682,7 +681,7 @@ export default function bifrostExtension(pi: ExtensionAPI) {
 
       if (classification.kind === "classified") {
         const tag = classification.source === "inline" ? "!" : classification.source;
-        console.error(`[bifrost] classify: ${classification.tier} [${tag}]`);
+        console.error(`[bifrost] classify: ${classification.tier} [${tag}]${classification.kind === "classified" && classification.context?.sent ? " +context" : ""}`);
       }
 
       endClassify({ kind: classification.kind, tier: classification.kind !== "unclassified" ? classification.tier : undefined });

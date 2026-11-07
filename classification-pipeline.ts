@@ -2,6 +2,7 @@ import type { ClassifierModel } from "./classifier.ts";
 import { classifyCompiled, compileRules, type RouteRule } from "./routing.ts";
 import { debug, debugMeasure } from "./debug.ts";
 import { CLASSIFIER_BACKEND_IDS, type ClassificationJudgment, type ClassifierOutput, type ClassifierBackend } from "./classifier-backends.ts";
+import { contextSummary } from "./classifier-semantics.ts";
 import type { ConversationContext } from "./conversation-context.ts";
 
 // ── ADT result type ────────────────────────────────────────────
@@ -118,8 +119,12 @@ export function createPipeline(deps: PipelineDeps): ClassificationPipeline {
 
     // Set once context has actually been handed to the direct classifier; later results report it.
     let contextOutcome: ContextOutcome | undefined;
-    const withContext = (result: Exclude<ClassificationResult, { kind: "unclassified" }>): ClassificationResult =>
-      contextOutcome ? { ...result, context: contextOutcome } : result;
+    const withContext = (result: Exclude<ClassificationResult, { kind: "unclassified" }>): ClassificationResult => {
+      if (!contextOutcome || !context) return result;
+      // Counts and flags only: the context text never reaches a trace.
+      debug("pipeline", "context", { sent: contextOutcome.sent, used: contextOutcome.used, ...contextSummary(context) });
+      return { ...result, context: contextOutcome };
+    };
 
     // Stage 3: optional direct classifier (typesafe or pi-native), then prompt fallback.
     if (classifyDirect) {

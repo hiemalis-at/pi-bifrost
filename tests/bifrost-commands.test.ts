@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { BIFROST_COMMAND_OPTIONS, BIFROST_JSON_PREFIX, buildClassifierTestReport, buildPreviewFailure, buildPreviewReport, createCommandRouter, getBifrostCommandCompletions, log, nextClassifierConfig, parsePreviewArgs, renderPreviewReport, runBifrostCommand, serializePreviewReport, type BifrostPreviewSuccess } from "../commands.ts";
 import { makeModel, makePiClassifierModel, makeRegistry } from "./helpers.ts";
 import { createPipeline } from "../classification-pipeline.ts";
+import { setupDebug } from "../debug.ts";
 import { DEFAULT_THRESHOLD, lookupCache, touchCacheEntry, updateCache, type CacheEntry } from "../cache.ts";
 
 function makeCtx(
@@ -1577,5 +1578,173 @@ describe("dashboard menu", () => {
       // every test that runs afterwards.
       (BIFROST_COMMAND_OPTIONS as unknown as Array<{ value: string; description: string }>)[0] = original;
     }
+  });
+});
+
+describe("conversation context visibility", () => {
+  const SENTINELS = ["SENTINEL_USER_ONE", "SENTINEL_ASSISTANT_ONE", "SENTINEL_TOOLARG", "SENTINEL_TOOLRESULT", "SENTINEL_USER_TWO", "SENTINEL_ASSISTANT_TWO"];
+  const text = (value: string) => ({ type: "text", text: value });
+  const branch = [
+    { type: "message", message: { role: "user", content: [text("SENTINEL_USER_ONE please plan")] } },
+    { type: "message", message: { role: "assistant", provider: "fixture", model: "chat", content: [text("SENTINEL_ASSISTANT_ONE plan"), { type: "toolCall", name: "read", arguments: { path: "SENTINEL_TOOLARG" } }] } },
+    { type: "message", message: { role: "toolResult", content: [text("SENTINEL_TOOLRESULT")] } },
+    { type: "message", message: { role: "user", content: [text("SENTINEL_USER_TWO refine")] } },
+    { type: "message", message: { role: "assistant", provider: "fixture", model: "chat", content: [text("SENTINEL_ASSISTANT_TWO refined")] } },
+    { type: "message", message: { role: "user", content: [text("Approved")] } },
+  ];
+
+  function printCtx(sessionBranch: unknown[] = branch) {
+    const { ctx } = makeCtx([makeModel("fixture", "chat")]);
+    return { ...(ctx as unknown as Record<string, unknown>), mode: "print", hasUI: false, sessionManager: { getBranch: () => sessionBranch } } as never;
+  }
+
+  function contextState(contextBlock: Record<string, unknown> | undefined, backend = "pi-native", directResult?: () => Promise<unknown>) {
+    const state: any = makeState();
+    state.config = {
+      models: { general: ["chat"] },
+      default: "general",
+      classifier: { backend, ...(contextBlock ? { context: contextBlock } : {}) },
+    };
+    state.getPipeline = () => createPipeline({
+      cacheLookup: () => undefined,
+      classifyDirect: (directResult ?? (async () => ({ tier: "general", backend: "pi-native", contextSent: true }))) as never,
+      classifierModels: [],
+      classifyWithLLM: async () => undefined,
+      regexRules: [],
+      defaultTier: "general",
+      tiers: ["general"],
+    });
+    return state;
+  }
+
+  async function capture(run: () => Promise<void>): Promise<string[]> {
+    const original = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => { lines.push(args.map((arg) => String(arg)).join(" ")); };
+    try { await run(); } finally { console.error = original; }
+    return lines;
+  }
+
+  function jsonReport(lines: string[]): Record<string, any> {
+    const marked = lines.filter((line) => line.startsWith(BIFROST_JSON_PREFIX));
+    assert.equal(marked.length, 1, lines.join("\n"));
+    return JSON.parse(marked[0].slice(BIFROST_JSON_PREFIX.length));
+  }
+
+  it("preview --json includes context with sent true, turns and chars", async () => {
+    const state = contextState({ enabled: true });
+    const lines = await capture(() => createCommandRouter(state)("preview --json go", printCtx()));
+    const report = jsonReport(lines);
+    assert.equal(report.context.sent, true);
+    assert.equal(report.context.advisory, false);
+    assert.equal(report.context.used, true);
+    assert.equal(report.context.turns, 2);
+    assert.ok(report.context.chars > 0);
+    assert.equal(report.context.redacted, false);
+    assert.equal(report.context.truncated, false);
+  });
+
+  it("preview with the block disabled reports advisory true and sent false", async () => {
+    const state = contextState(undefined);
+    const lines = await capture(() => createCommandRouter(state)("preview --json go", printCtx()));
+    const report = jsonReport(lines);
+    assert.equal(report.context.sent, false);
+    assert.equal(report.context.advisory, true);
+    assert.equal("used" in report.context, false);
+    assert.equal(report.context.turns, 2);
+    assert.ok(report.context.chars > 0);
+  });
+
+  it("preview omits context when no prior exchange exists or the backend is prompt", async () => {
+    const first = contextState({ enabled: true });
+    const a = jsonReport(await capture(() => createCommandRouter(first)("preview --json go", printCtx([branch[0]]))));
+    assert.equal("context" in a, false);
+    const prompt = contextState({ enabled: true }, "prompt");
+    const b = jsonReport(await capture(() => createCommandRouter(prompt)("preview --json go", printCtx())));
+    assert.equal("context" in b, false);
+  });
+
+  it("preview text shows the context line", async () => {
+    const sent = contextState({ enabled: true });
+    const sentLines = await capture(() => createCommandRouter(sent)("preview go", printCtx()));
+    assert.ok(sentLines.some((line) => /^\[bifrost\] context: 2 exchanges, [\d,]+ chars \(sent\)$/.test(line)), sentLines.join("\n"));
+    const off = contextState(undefined);
+    const offLines = await capture(() => createCommandRouter(off)("preview go", printCtx()));
+    assert.ok(offLines.some((line) => /^\[bifrost\] context: 2 exchanges, [\d,]+ chars \(not sent: block disabled\)$/.test(line)), offLines.join("\n"));
+  });
+
+  it("a context-fed miss shows classified without usable context", async () => {
+    const state = contextState({ enabled: true }, "pi-native", async () => undefined);
+    const lines = await capture(() => createCommandRouter(state)("preview go", printCtx()));
+    assert.ok(lines.some((line) => line.includes("(sent; classified without usable context)")), lines.join("\n"));
+    const json = jsonReport(await capture(() => createCommandRouter(state)("preview --json go", printCtx())));
+    assert.equal(json.context.sent, true);
+    assert.equal(json.context.used, false);
+  });
+
+  it("renders redaction and truncation as words in the context line", () => {
+    const base = {
+      ok: true as const, prompt: "p", source: "classifier" as const, tier: "general", strategy: "first-available",
+      requestedCandidates: [], fallbackCandidates: [],
+    };
+    const lines = renderPreviewReport({ ...base, context: { sent: true, advisory: false, used: true, turns: 1, chars: 1840, redacted: true, truncated: true } });
+    assert.ok(lines.includes("context: 1 exchange, 1,840 chars, redacted, truncated (sent)"), lines.join("\n"));
+    assert.equal(renderPreviewReport(base).some((line) => line.startsWith("context:")), false);
+  });
+
+  it("output, JSON and debug contain none of the sentinel text from the branch", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bifrost-context-debug-"));
+    const path = join(dir, "debug.jsonl");
+    setupDebug({ enabled: true, path }, dir);
+    try {
+      const state = contextState({ enabled: true });
+      const lines = [
+        ...await capture(() => createCommandRouter(state)("preview go", printCtx())),
+        ...await capture(() => createCommandRouter(state)("preview --json go", printCtx())),
+      ];
+      let debugText = "";
+      for (let i = 0; i < 100; i++) {
+        debugText = existsSync(path) ? readFileSync(path, "utf8") : "";
+        if (debugText.includes('"event":"context"')) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const record = debugText.split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((entry) => entry.module === "pipeline" && entry.event === "context");
+      assert.ok(record, "pipeline context debug event must be written");
+      assert.equal(record.sent, true);
+      assert.equal(record.used, true);
+      assert.equal(record.turns, 2);
+      assert.ok(record.chars > 0);
+      assert.equal(typeof record.redacted, "boolean");
+      assert.equal(typeof record.truncated, "boolean");
+      const everything = `${lines.join("\n")}\n${debugText}`;
+      for (const sentinel of SENTINELS) assert.equal(everything.includes(sentinel), false, `${sentinel} leaked`);
+    } finally {
+      setupDebug({ enabled: false, path }, dir);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe("classifier status", () => {
+    async function statusOutput(state: unknown): Promise<string> {
+      const { ctx, calls } = makeCtx();
+      await createCommandRouter(state as never)("classifier status", ctx as never);
+      return calls.find((call) => call.kind === "widget")?.lines?.join("\n") ?? "";
+    }
+
+    it("shows context on and the disclosure phrase when enabled on a direct backend", async () => {
+      const output = await statusOutput(contextState({ enabled: true }));
+      assert.match(output, /^context: on \(sent to the classifier provider\)$/m);
+    });
+
+    it("shows context off when the block is absent or disabled", async () => {
+      assert.match(await statusOutput(contextState(undefined)), /context: off$/m);
+      assert.match(await statusOutput(contextState({ enabled: false })), /context: off$/m);
+    });
+
+    it("shows context off with the backend requirement for the prompt backend", async () => {
+      const output = await statusOutput(contextState({ enabled: true }, "prompt"));
+      assert.match(output, /context: off \(direct classifier backend required\)/);
+      assert.doesNotMatch(output, /sent to the classifier provider/);
+    });
   });
 });

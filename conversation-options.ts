@@ -13,6 +13,8 @@ export interface ClassifyOptionsSource {
   readonly backend: ClassifierBackend;
   /** The current session branch (`ctx.sessionManager.getBranch()`). */
   readonly branch?: readonly SessionEntryLike[];
+  /** Also build `advisoryContext` when the block is disabled. Only preview sets this: nothing else reads it. */
+  readonly advisory?: boolean;
 }
 
 export interface BuiltClassifyOptions extends ClassifyOptions {
@@ -27,15 +29,18 @@ function isDirectBackend(backend: ClassifierBackend): boolean {
 /**
  * Classify options for one call. Context goes only to direct backends, only when
  * `classifier.context.enabled === true`, never in subagent runs, and only when a prior
- * exchange exists. With the block disabled the same context is built as `advisoryContext`.
+ * exchange exists. With the block disabled the same context is built as `advisoryContext`, but
+ * only when `source.advisory` is set (preview); otherwise nothing is built.
  */
 export function buildClassifyOptions(
   source: ClassifyOptionsSource,
   env: Record<string, string | undefined> = process.env,
 ): BuiltClassifyOptions {
-  const { config, backend, branch } = source;
+  const { config, backend, branch, advisory } = source;
   if (env.PI_SUBAGENT_RUN_ID || !isDirectBackend(backend) || !branch || branch.length === 0) return {};
   const block = config.classifier?.context;
+  const enabled = block?.enabled === true;
+  if (!enabled && advisory !== true) return {};
   const context = buildConversationContext(
     branch,
     {
@@ -47,7 +52,7 @@ export function buildClassifyOptions(
     (provider, modelId) => tierForModel(config.models, provider, modelId),
   );
   if (!context) return {};
-  return block?.enabled === true ? { context } : { advisoryContext: context };
+  return enabled ? { context } : { advisoryContext: context };
 }
 
 /**

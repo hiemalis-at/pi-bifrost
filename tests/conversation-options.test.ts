@@ -25,17 +25,39 @@ function config(context?: ContextConfig): BifrostConfig {
 }
 
 describe("buildClassifyOptions", () => {
-  it("block absent or disabled sets no context but sets advisoryContext when a prior exchange exists", () => {
+  it("block absent or disabled sets no context and, without advisory, no advisoryContext", () => {
     for (const cfg of [config(), config({ enabled: false }), config({ turns: 2 })]) {
       const built = buildClassifyOptions({ config: cfg, backend: "pi-native", branch: twoTurns }, NO_ENV);
+      assert.deepEqual(built, {});
+    }
+  });
+
+  it("block absent or disabled sets advisoryContext only with advisory: true", () => {
+    for (const cfg of [config(), config({ enabled: false }), config({ turns: 2 })]) {
+      const built = buildClassifyOptions({ config: cfg, backend: "pi-native", branch: twoTurns, advisory: true }, NO_ENV);
       assert.equal(built.context, undefined);
       assert.ok(built.advisoryContext);
       assert.ok(built.advisoryContext.exchanges.length > 0);
     }
   });
 
+  it("advisory with no prior exchange, a prompt backend, or a subagent run sets nothing", () => {
+    const single = buildClassifyOptions({ config: config(), backend: "pi-native", branch: [user("first prompt")], advisory: true }, NO_ENV);
+    assert.deepEqual(single, {});
+    const prompt = buildClassifyOptions({ config: config(), backend: "prompt", branch: twoTurns, advisory: true }, NO_ENV);
+    assert.deepEqual(prompt, {});
+    const subagent = buildClassifyOptions({ config: config(), backend: "pi-native", branch: twoTurns, advisory: true }, { PI_SUBAGENT_RUN_ID: "r" });
+    assert.deepEqual(subagent, {});
+  });
+
+  it("advisory with the block enabled still builds context, not advisoryContext", () => {
+    const built = buildClassifyOptions({ config: config({ enabled: true }), backend: "pi-native", branch: twoTurns, advisory: true }, NO_ENV);
+    assert.ok(built.context);
+    assert.equal(built.advisoryContext, undefined);
+  });
+
   it("block disabled with no prior exchange sets neither", () => {
-    const built = buildClassifyOptions({ config: config(), backend: "pi-native", branch: [user("first prompt")] }, NO_ENV);
+    const built = buildClassifyOptions({ config: config(), backend: "pi-native", branch: [user("first prompt")], advisory: true }, NO_ENV);
     assert.deepEqual(built, {});
   });
 

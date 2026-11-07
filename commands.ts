@@ -9,6 +9,7 @@ import type { CacheEntry } from "./cache.ts";
 import { cachePath, loadCache, saveCache, DEFAULT_MAX_ENTRIES, DEFAULT_THRESHOLD } from "./cache.ts";
 import type { ClassificationPipeline, ClassificationResult, ClassificationSource } from "./classification-pipeline.ts";
 import { buildClassifyOptions, type BuiltClassifyOptions } from "./conversation-options.ts";
+import { contextSummary } from "./classifier-semantics.ts";
 import { setupDebug, debug, debugMeasure } from "./debug.ts";
 import { runProbe, probeOptionsFromConfig, PROBE_PROMPT_TEXT } from "./probe.ts";
 import { setBifrostModeStatus, setBifrostStatus } from "./ux-status.ts";
@@ -54,12 +55,16 @@ export interface BifrostState {
   classifierDetection?: { backend: ClassifierBackend; reason: string };
 }
 
-/** Classify options from the session branch, same as the turn handler. Strip `advisoryContext` before `classify`. */
-function classifyOptionsFor(ctx: ExtensionContext, state: BifrostState): BuiltClassifyOptions {
+/**
+ * Classify options from the session branch, same as the turn handler. Only preview passes
+ * `advisory`, which adds an `advisoryContext` for size reporting; strip it before `classify`.
+ */
+function classifyOptionsFor(ctx: ExtensionContext, state: BifrostState, advisory = false): BuiltClassifyOptions {
   return buildClassifyOptions({
     config: state.config,
     backend: state.effectiveClassifierBackend(state.config).backend,
     branch: ctx.sessionManager.getBranch(),
+    ...(advisory ? { advisory: true } : {}),
   });
 }
 
@@ -588,7 +593,7 @@ async function handleClassifierTest(ctx: ExtensionContext, state: BifrostState):
   let result;
   try {
     const pipeline = state.getPipeline(ctx);
-    const { advisoryContext: _advisory, ...options } = classifyOptionsFor(ctx, state);
+    const options = classifyOptionsFor(ctx, state);
     result = await pipeline.classify(prompt, undefined, options);
   } finally {
     uiDone(ctx);
@@ -639,7 +644,7 @@ async function handleBenchmark(
   let classification;
   try {
     const pipeline = state.getPipeline(ctx);
-    const { advisoryContext: _advisory, ...options } = classifyOptionsFor(ctx, state);
+    const options = classifyOptionsFor(ctx, state);
     classification = await pipeline.classify(prompt, undefined, options);
   } finally {
     uiDone(ctx);
@@ -669,6 +674,13 @@ async function handleBenchmark(
 
   lines.push("-----------------");
   await uiResult(ctx, "Bifrost benchmark", lines);
+}
+
+/** `/bifrost classifier status` line for conversation context. "On" needs the block enabled and a direct backend. */
+function contextStatusLine(blockEnabled: boolean, backend: ClassifierBackend): string {
+  if (!blockEnabled) return "context: off";
+  const direct = backend === CLASSIFIER_BACKEND_IDS.typesafe || backend === CLASSIFIER_BACKEND_IDS.piNative;
+  return direct ? "context: on (sent to the classifier provider)" : "context: off (direct classifier backend required)";
 }
 
 // ── Preview report ──────────────────────────────────────────
@@ -713,6 +725,21 @@ export type BifrostPreviewSuccess = {
   readonly fallbackCandidates: string[];
   readonly defaultTier?: string;
   readonly selected?: string;
+  /** Present when context was sent to the classifier, or would have been (block disabled). Counts and flags only, never text. */
+  readonly context?: BifrostPreviewContext;
+};
+
+/** Content-free description of the conversation context behind one preview. */
+export type BifrostPreviewContext = {
+  readonly sent: boolean;
+  /** True when the block is disabled and the size is what enabling it would send. */
+  readonly advisory: boolean;
+  /** Only when sent: whether the classifier actually used the context. */
+  readonly used?: boolean;
+  readonly turns: number;
+  readonly chars: number;
+  readonly redacted: boolean;
+  readonly truncated: boolean;
 };
 
 /** No routing decision was made, so no routing field is reported. */
@@ -756,12 +783,30 @@ export function buildPreviewFailure(prompt: string, error: BifrostPreviewFailure
   return { ok: false, prompt, error };
 }
 
+/**
+ * What the preview reports about conversation context: sent (from the pipeline's outcome, sized
+ * from the context handed to it), or advisory (block disabled, sized only). Absent otherwise.
+ */
+export function buildPreviewContext(
+  built: BuiltClassifyOptions,
+  classification: Exclude<ClassificationResult, { kind: "unclassified" }>,
+): BifrostPreviewContext | undefined {
+  if (classification.context?.sent && built.context) {
+    return { sent: true, advisory: false, used: classification.context.used, ...contextSummary(built.context) };
+  }
+  if (built.advisoryContext) {
+    return { sent: false, advisory: true, ...contextSummary(built.advisoryContext) };
+  }
+  return undefined;
+}
+
 export function buildPreviewReport(input: {
   prompt: string;
   classification: Exclude<ClassificationResult, { kind: "unclassified" }>;
   display: BifrostTierDisplay;
+  context?: BifrostPreviewContext;
 }): BifrostPreviewSuccess {
-  const { prompt, classification, display } = input;
+  const { prompt, classification, display, context } = input;
   const judgment = classification.kind === "classified" ? classification.judgment : undefined;
   return {
     ok: true,
@@ -781,11 +826,23 @@ export function buildPreviewReport(input: {
     fallbackCandidates: display.fallbackCandidateLines,
     ...(display.defaultTier !== undefined ? { defaultTier: display.defaultTier } : {}),
     ...(display.selected !== undefined ? { selected: display.selected } : {}),
+    ...(context ? { context } : {}),
   };
 }
 
 export function serializePreviewReport(report: BifrostPreviewReport): string {
   return JSON.stringify(report);
+}
+
+function renderContextLine(context: BifrostPreviewContext): string {
+  const exchanges = `${context.turns} ${context.turns === 1 ? "exchange" : "exchanges"}`;
+  const flags = [context.redacted ? "redacted" : undefined, context.truncated ? "truncated" : undefined]
+    .filter((flag): flag is string => flag !== undefined);
+  const size = [exchanges, `${context.chars.toLocaleString("en-US")} chars`, ...flags].join(", ");
+  const disposition = !context.sent
+    ? "not sent: block disabled"
+    : context.used === false ? "sent; classified without usable context" : "sent";
+  return `context: ${size} (${disposition})`;
 }
 
 export function renderPreviewReport(report: BifrostPreviewSuccess): string[] {
@@ -802,6 +859,7 @@ export function renderPreviewReport(report: BifrostPreviewSuccess): string[] {
     ] : []),
     `tier:      ${report.tier}`,
     `strategy:  ${report.strategy}`,
+    ...(report.context ? [renderContextLine(report.context)] : []),
     `selected tier: ${report.selectedTier ?? PREVIEW_NONE}`,
     ...(report.fallbackReason ? [`fallback:  ${report.fallbackReason}`] : []),
     `requested candidates (${report.tier}):`,
@@ -842,7 +900,7 @@ async function handlePreview(
   let built: BuiltClassifyOptions = {};
   try {
     const pipeline = state.getPipeline(ctx);
-    built = classifyOptionsFor(ctx, state);
+    built = classifyOptionsFor(ctx, state, true);
     const { advisoryContext: _advisory, ...options } = built;
     classification = await pipeline.classify(prompt, undefined, options);
   } finally {
@@ -859,6 +917,7 @@ async function handlePreview(
     prompt,
     classification,
     display: resolveTierDisplay(classification.tier, state, ctx),
+    context: buildPreviewContext(built, classification),
   });
 
   if (json) {
@@ -1370,6 +1429,7 @@ export function createCommandRouter(
       const lines = [
         `classifier: enabled=${state.classifierEnabled}`,
         detail,
+        contextStatusLine(classifier?.context?.enabled === true, backend),
         ...(backend !== CLASSIFIER_BACKEND_IDS.prompt ? [`observations=${metrics.total}`, `outcomes=${JSON.stringify(metrics.outcomes)}`] : []),
       ];
       uiOutput(ctx, lines);
