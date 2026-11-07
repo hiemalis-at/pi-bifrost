@@ -331,6 +331,35 @@ describe("validateConfig", () => {
     assert.equal(merged.classifier?.piNative?.timeoutMs, 2000);
   });
 
+  it("merges the context nested block field by field across layers", () => {
+    const merged = mergeConfig(
+      { classifier: { backend: "pi-native", context: { enabled: true, turns: 5 } } },
+      { classifier: { context: { maxChars: 2000 } } },
+    );
+    assert.deepEqual(merged.classifier?.context, { enabled: true, turns: 5, maxChars: 2000 });
+
+    const overridden = mergeConfig(
+      { classifier: { context: { enabled: true, turns: 5, includeTiers: false } } },
+      { classifier: { context: { enabled: false, turns: 2 } } },
+    );
+    assert.deepEqual(overridden.classifier?.context, { enabled: false, turns: 2, includeTiers: false });
+
+    const baseOnly = mergeConfig(
+      { classifier: { context: { enabled: true, turns: 4 } } },
+      { classifier: { backend: "pi-native" } },
+    );
+    assert.deepEqual(baseOnly.classifier?.context, { enabled: true, turns: 4 });
+
+    const overrideOnly = mergeConfig(
+      { classifier: { backend: "pi-native" } },
+      { classifier: { context: { enabled: true } } },
+    );
+    assert.deepEqual(overrideOnly.classifier?.context, { enabled: true });
+
+    const neither = mergeConfig({ classifier: { backend: "pi-native" } }, { classifier: { minConfidence: 0.5 } });
+    assert.equal(neither.classifier?.context, undefined);
+  });
+
   it("allows valid probe settings", () => {
     const issues = validateConfig({
       ...baseConfig,

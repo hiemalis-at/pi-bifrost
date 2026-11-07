@@ -483,6 +483,7 @@ export function mergeConfig(
     merged.classifier.criteria = mergeCriteria(base.classifier?.criteria, override.classifier?.criteria);
     merged.classifier.typesafe = mergeObj(base.classifier?.typesafe, override.classifier?.typesafe);
     merged.classifier.piNative = mergeObj(base.classifier?.piNative, override.classifier?.piNative);
+    merged.classifier.context = mergeObj(base.classifier?.context, override.classifier?.context);
     if (merged.classifier.backend === CLASSIFIER_BACKEND_IDS.typesafe || merged.classifier.backend === CLASSIFIER_BACKEND_IDS.piNative) {
       const mergedClassifier = merged.classifier as Record<string, unknown>;
       const overrideClassifier = override.classifier as Record<string, unknown> | undefined;
