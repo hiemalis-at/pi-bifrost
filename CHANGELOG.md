@@ -2,6 +2,15 @@
 
 All notable changes to pi-bifrost are documented here.
 
+## [Unreleased]
+
+### Added
+- Opt-in `classifier.context` block (off by default) sends bounded, redacted recent conversation to the direct classifier backends (`typesafe`, `pi-native`), so a short reply is judged by the work it triggers. The prompt backend never receives context. Enabling it sends assistant text and earlier user prompts to the classifier provider, the same provider that receives the prompt. To turn it off, set `"classifier": { "context": { "enabled": false } }`.
+- `/bifrost preview` reports a `context:` line and a `context` field in `--json`; `/bifrost classifier status` shows whether context is on. Reports show sizes and flags, never content.
+
+### Changed
+- A classification that sends context neither reads nor writes the local classification cache. With the context block enabled, most classifications from the second turn of a session call the classifier again.
+
 ## [0.5.0] - 2026-10-05
 
 ### Added

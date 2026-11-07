@@ -105,6 +105,77 @@ You can omit `classifier.piNative.model`. Pi then uses the first available TypeS
 
 See [the full example](../../examples/classifier-pi-native.json).
 
+## Conversation context
+
+By default a direct classifier judges each prompt on its own text. A short reply such as "Approved" is then classified by its words, not by the work it triggers. The opt-in `classifier.context` block lets the direct backends (`typesafe` and `pi-native`) see bounded recent conversation. It is off by default, and the prompt backend never receives it.
+
+```json
+{
+  "classifier": {
+    "backend": "pi-native",
+    "context": { "enabled": true }
+  }
+}
+```
+
+The other keys (`turns`, `maxChars`, `includeToolSummary`, `includeTiers`) and their limits are listed in [Configuration](configuration.md#conversation-context-for-the-direct-classifier).
+
+**Disclosure.** Enabling the block sends assistant text to the classifier provider. That is the provider you already chose for prompt classification, reached through the same transport. Earlier user prompts are sent as well, after redaction. To turn it off, set:
+
+```json
+{
+  "classifier": { "context": { "enabled": false } }
+}
+```
+
+**What is sent.** With the block enabled, each classification request carries:
+
+- the current prompt;
+- the last `turns` exchanges (default 3), each as the user prompt and the assistant's final text;
+- the tier each earlier turn ran on, when `includeTiers` is on. This is information for the classifier only. Nothing derives a tier from it, and there is no tier floor;
+- tool names with counts, such as `edit x4, bash x2`, when `includeToolSummary` is on. Tool arguments and results are never included.
+
+The request holds these as an object named `state`:
+
+```json
+{
+  "current_prompt": "Approved",
+  "previous_exchanges": [
+    { "user": "Plan the migration", "assistant": "Plan: ...", "tier": "frontier", "tools": "read x3" }
+  ],
+  "omitted_earlier_turns": false
+}
+```
+
+**What is never sent.** Tool results, tool arguments, file contents, system prompts, reasoning blocks, images, and anything from a parent session.
+
+**Treatment.**
+
+- A code fence in assistant text becomes a stub such as `[code: ts, 42 lines]`.
+- Credential-shaped text in assistant text and earlier user prompts is replaced with `[redacted]`. The patterns cover provider API key shapes, bearer tokens, private key blocks, secret-named assignments (including quoted JSON and YAML), `--password`-style flags, credentials in URLs, and long high-entropy tokens. Text that matches none of these patterns is sent as written.
+- `maxChars` is the total budget. Turns are kept newest first. Each assistant reply is capped at 2000 characters and each user prompt at 1000. When earlier turns are dropped, `omitted_earlier_turns` is set.
+
+**When a judgment is used.** A returned judgment decides the tier, subject to the single confidence threshold `classifier.minConfidence`. If the classifier misses or answers with low confidence, routing continues exactly as it does without context: prompt classifier fallback, then regex rules, then the default tier. The preview then reports that the classification was made without usable context.
+
+**Not sent at all.** Inline tier words and `/bifrost pin` skip classification, so nothing is sent. Subagent sessions and the prompt backend never send context.
+
+**Cache.** When context is sent, the fuzzy classification cache is neither read nor written for that classification. The first turn of a session has no context and caches as before. With the block enabled, most classifications from the second turn on skip the cache and call the classifier. See [Prompt caching](prompt-caching.md).
+
+**Stage policy by role.** Put "strong model plans, cheaper model executes" in tier criteria, written by role:
+
+```json
+"criteria": {
+  "planner": "Planning, design, orchestration, review and decisions between options. Not carrying out an agreed plan.",
+  "worker":  "Carrying out an agreed plan: implementation, edits, tests, mechanical follow-through. Not choosing between designs."
+}
+```
+
+**Visibility.** `/bifrost preview` reports the context it sent or would send, and `/bifrost classifier status` shows whether context is on. Reports show sizes and flags, never content. See [Commands](commands.md).
+
+**Scope limits.** Context changes only the tier choice made for a message. It does not re-route within a single turn: a prompt that asks for planning and implementation at once still runs on one model.
+
+A complete file is in [`examples/classifier-conversation-aware.json`](../../examples/classifier-conversation-aware.json).
+
 ## Credentials
 
 Recommended Pi user auth file, `~/.pi/agent/auth.json`:
@@ -139,13 +210,13 @@ Repository config cannot redirect TypeSafe credentials to arbitrary origins. Typ
 /bifrost classifier status
 ```
 
-`test` makes a fresh request. `status` shows the active backend, model, fallback, and safe metrics without exposing keys. The direct TypeSafe backend also shows the credential source. Pi-native shows the catalog model or the configured `classifier.piNative.model`.
+`test` makes a fresh request, and it sends session context too when `classifier.context` is enabled. `status` shows the active backend, model, fallback, and safe metrics without exposing keys. The direct TypeSafe backend also shows the credential source. Pi-native shows the catalog model or the configured `classifier.piNative.model`.
 
 Low confidence, missing credentials, network failure, timeout, invalid response, rate limit, or open classifier circuit follows configured fallback. User prompts are never replayed.
 
 ## Privacy and preview behavior
 
-The active classifier receives the current prompt and tier instructions. It does not receive conversation history, prior messages, source files, or tool output by default.
+The active classifier receives the current prompt and tier instructions. It does not receive conversation history, prior messages, source files, or tool output by default. The direct backends receive bounded conversation context only when `classifier.context` is enabled; see [Conversation context](#conversation-context).
 
 `/bifrost preview <prompt>` uses the same steps Bifrost uses to pick a tier for a normal message (local classification cache → optional classifier → rules → default). It does not treat a leading tier name as an override. When no local cache entry resolves first, an enabled prompt, TypeSafe/Jev, or Pi-native classifier can receive the preview prompt and incur classifier usage. Preview does not submit a generation turn or activate the selected provider model.
 

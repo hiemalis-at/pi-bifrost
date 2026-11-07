@@ -163,6 +163,28 @@ Use Pi's native classifier API with TypeSafe/Jev. Run `/login` in Pi or set `TYP
 
 Omit `classifier.piNative.model` to use the first available TypeSafe classifier model in Pi's catalog. Run `/bifrost classifier status` to see the selected backend.
 
+### `classifier-conversation-aware.json`
+
+Use when short replies such as "Approved" should be classified by the work they trigger, and you accept that assistant text is sent to the classifier provider.
+
+- Uses the `pi-native` backend with `typesafe/jev-latest`, as in the recipe above.
+- Enables `classifier.context`, which sends the last 3 exchanges (up to 6000 characters) to the classifier. Tool names and counts are included; tool arguments and results are not. Credential-shaped text is redacted.
+- Defines two tiers by role: `planner` for planning and decisions, and `worker` for carrying out an agreed plan.
+- Falls back to regex rules when classification misses or has low confidence.
+
+Replace the `provider/...` model placeholders with models from your Pi registry. To stop sending context, set `classifier.context.enabled` to `false`. Details are in [Conversation context](../docs/guide/classifiers.md#conversation-context).
+
+Try, after a planning exchange in the same session:
+
+```text
+/bifrost preview approved, go ahead
+/bifrost preview yes, use option 2
+```
+
+Preview shows a `context:` line when context is available. Preview sends context only when the block is enabled.
+
+Tradeoff: short replies can be judged by their context, but most classifications from the second turn on skip the classification cache and call the classifier, and assistant text is sent to the classifier provider.
+
 ### `advanced-classifier-prompt.json`
 
 Use when the built-in classifier prompt is too terse for your workflow and you want the LLM to route by task intent rather than isolated keywords.

@@ -102,7 +102,7 @@ Use direct bindings when role or task policy already knows the exact model. Tier
 
 ## Conversation context for the direct classifier
 
-By default the classifier judges each prompt on its own text. A short reply such as "approve the plan" then looks trivial, although the work it triggers may not be. The opt-in `classifier.context` block sends bounded recent conversation to the direct classifier (`typesafe` or `pi-native`) so it can judge the work a reply triggers. It is disabled by default and the prompt backend never receives it.
+By default the classifier judges each prompt on its own text. A short reply such as "approve the plan" then looks trivial, although the work it triggers may not be. The opt-in `classifier.context` block sends bounded, redacted recent conversation to the direct classifier (`typesafe` or `pi-native`) so it can judge the work a reply triggers. It is disabled by default and the prompt backend never receives it. What is sent, what is never sent, redaction, and the cache effect are described in [Conversation context](classifiers.md#conversation-context).
 
 | Key | Default | Allowed | Meaning |
 |-----|---------|---------|---------|
@@ -112,7 +112,7 @@ By default the classifier judges each prompt on its own text. A short reply such
 | `classifier.context.includeToolSummary` | `true` | boolean | Tool names and counts per exchange. Never tool arguments or results. |
 | `classifier.context.includeTiers` | `true` | boolean | The tier each previous turn ran on, when it can be determined. |
 
-Enabling it with `backend: "prompt"` is reported as a warning because nothing is sent. Stage policy such as "strong model plans, cheaper model executes" lives in your tier criteria, written by role:
+Enabling it with `backend: "prompt"` produces a config warning because nothing is sent. Stage policy such as "strong model plans, cheaper model executes" lives in your tier criteria, written by role:
 
 ```json
 {
@@ -127,7 +127,7 @@ Enabling it with `backend: "prompt"` is reported as a warning because nothing is
 }
 ```
 
-A complete file is in [`examples/classifier-conversation-aware.json`](../../examples/classifier-conversation-aware.json). Enabling the block sends conversation text to the classifier provider, the same recipient as the prompt.
+A complete file is in [`examples/classifier-conversation-aware.json`](../../examples/classifier-conversation-aware.json). Enabling the block sends assistant text and earlier user prompts to the classifier provider, the same provider that receives the prompt. To turn it off, set `"classifier": { "context": { "enabled": false } }`.
 
 ## Tier-resolution order
 
