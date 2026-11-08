@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { setupDebug } from "../debug.ts";
 import { buildClassifyOptions, modelVisibleEntries } from "../conversation-options.ts";
 import type { BifrostConfig, ContextConfig } from "../config.ts";
 import type { SessionEntryLike } from "../conversation-context.ts";
@@ -234,5 +238,40 @@ describe("modelVisibleEntries (Pi's projection: context edits, compaction)", () 
   it("a session manager whose projection throws yields no entries", () => {
     const broken = { buildSessionProjection: () => { throw new Error("boom"); } };
     assert.deepEqual(modelVisibleEntries(broken as never), []);
+  });
+
+  async function projectionRecords(run: () => void): Promise<{ records: Record<string, unknown>[]; raw: string }> {
+    const dir = mkdtempSync(join(tmpdir(), "bifrost-projection-debug-"));
+    const path = join(dir, "debug.jsonl");
+    setupDebug({ enabled: true, path }, dir);
+    try {
+      run();
+      let raw = "";
+      for (let i = 0; i < 100; i++) {
+        raw = existsSync(path) ? readFileSync(path, "utf8") : "";
+        if (raw.includes("context.projection.error")) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const records = raw.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+      return { records: records.filter((entry) => entry.event === "context.projection.error"), raw };
+    } finally {
+      setupDebug({ enabled: false, path }, dir);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("a throwing projection logs a content-free debug record with category throw", async () => {
+    const broken = { buildSessionProjection: () => { throw new Error("SECRET_ERROR_TEXT"); } };
+    const { records, raw } = await projectionRecords(() => assert.deepEqual(modelVisibleEntries(broken as never), []));
+    assert.equal(records.length, 1, raw);
+    assert.equal(records[0].module, "bifrost");
+    assert.equal(records[0].category, "throw");
+    assert.equal(raw.includes("SECRET_ERROR_TEXT"), false);
+  });
+
+  it("a host without buildSessionProjection yields no entries and logs category unsupported", async () => {
+    const { records, raw } = await projectionRecords(() => assert.deepEqual(modelVisibleEntries({} as never), []));
+    assert.equal(records.length, 1, raw);
+    assert.equal(records[0].category, "unsupported");
   });
 });

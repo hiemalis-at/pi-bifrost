@@ -1,6 +1,7 @@
 import { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_TURNS, type BifrostConfig } from "./config.ts";
 import { CLASSIFIER_BACKEND_IDS, type ClassifierBackend } from "./classifier-backends.ts";
 import type { ClassificationResult, ClassifyOptions } from "./classification-pipeline.ts";
+import { debug } from "./debug.ts";
 import {
   buildConversationContext,
   tierForModel,
@@ -26,13 +27,19 @@ function isMessageLike(value: unknown): value is MessageLike {
  * `context_edit` entries (a null replacement omits the target, a value swaps its content) and
  * compaction, so text another extension scrubbed or omitted is never read here. Only
  * `message` entries contribute, as with the raw branch; custom messages, summaries and state
- * entries are skipped. A projection that throws yields no entries: no context is sent.
+ * entries are skipped. A projection that throws, or a host that lacks `buildSessionProjection`
+ * (an older Pi), yields no entries: no context is sent. Both leave a content-free debug record.
  */
 export function modelVisibleEntries(session: SessionProjectionSource): SessionEntryLike[] {
+  if (typeof session.buildSessionProjection !== "function") {
+    debug("bifrost", "context.projection.error", { category: "unsupported" });
+    return [];
+  }
   let projection: ReturnType<SessionProjectionSource["buildSessionProjection"]>;
   try {
     projection = session.buildSessionProjection();
   } catch {
+    debug("bifrost", "context.projection.error", { category: "throw" });
     return [];
   }
   const entries: SessionEntryLike[] = [];
