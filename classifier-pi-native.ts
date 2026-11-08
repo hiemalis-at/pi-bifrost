@@ -5,7 +5,7 @@ import type { ReliabilityStore } from "./reliability-store.ts";
 import { debug as bifrostDebug } from "./debug.ts";
 import type { TypeSafeObservation, TypeSafeOutcome } from "./classifier-metrics.ts";
 import { CLASSIFIER_BACKEND_IDS, TYPE_SAFE_API_KEY_ENV, type ClassificationJudgment, type ClassifierRequest, type ClassifierTransport } from "./classifier-backends.ts";
-import { abortableDelay, criterionText, finite, sleep } from "./classifier-semantics.ts";
+import { CONTEXT_INSTRUCTIONS, abortableDelay, contextState, contextTraceFields, criterionText, finite, hasContext, sleep } from "./classifier-semantics.ts";
 import { TYPESAFE_MIN_CONFIDENCE } from "./typesafe-classifier.ts";
 
 /**
@@ -97,11 +97,13 @@ function buildContext(request: ClassifierRequest): ClassifierContext {
   const criteria: Record<string, string> = {};
   for (const tier of request.tiers) criteria[tier] = criterionText(request.criteria[tier] ?? tier);
   return {
-    state: { prompt: request.prompt },
+    state: hasContext(request) ? contextState(request) : { prompt: request.prompt },
     questions: {
       tier: {
         type: "choice",
-        instructions: "Which model tier best fits this coding-agent request? Judge task complexity and consequence, not stated preference or price.",
+        instructions: request.context
+          ? CONTEXT_INSTRUCTIONS
+          : "Which model tier best fits this coding-agent request? Judge task complexity and consequence, not stated preference or price.",
         criteria,
       },
     },
@@ -175,7 +177,7 @@ export function createPiNativeClassifier(options: PiNativeOptions): ClassifierTr
     const trace = (event: string, meta: Record<string, unknown> = {}) => {
       if (options.debug) bifrostDebug(CLASSIFIER_BACKEND_IDS.piNative, event, { trace_id: traceId, model: options.model, ...meta });
     };
-    trace("start", { tiers: request.tiers, prompt_length: request.prompt.length, timeout_ms: timeoutMs, max_attempts: maxAttempts });
+    trace("start", { tiers: request.tiers, prompt_length: request.prompt.length, ...contextTraceFields(request.context), timeout_ms: timeoutMs, max_attempts: maxAttempts });
     let attempts = 0;
     let observed = false;
     let trialClaimed = false;
@@ -284,7 +286,8 @@ export function createPiNativeClassifier(options: PiNativeOptions): ClassifierTr
           return finish("aborted");
         }
         if (result?.stopReason === "stop") {
-          const judgment = decodePiNativeJudgment(result, request.tiers, 0, resolved.id);
+          const decoded = decodePiNativeJudgment(result, request.tiers, 0, resolved.id);
+          const judgment = decoded && request.context ? { ...decoded, contextSent: true } : decoded;
           trace("decoded", { attempt, tier: judgment?.tier, confidence: judgment?.confidence, valid: Boolean(judgment) });
           if (!judgment) {
             recordFailure("decoder");

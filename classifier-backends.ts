@@ -1,3 +1,5 @@
+import type { ConversationContext } from "./conversation-context.ts";
+
 /** Stable configuration identities for classifier backends. */
 export const CLASSIFIER_BACKEND_IDS = {
   prompt: "prompt",
@@ -14,6 +16,8 @@ export interface ClassificationJudgment {
   readonly model?: string;
   readonly confidence?: number;
   readonly probabilities?: Readonly<Record<string, number>>;
+  /** True only when the classified request carried bounded conversation context. Absent otherwise. */
+  readonly contextSent?: boolean;
 }
 
 export type ClassifierOutput = ClassificationJudgment | string;
@@ -30,6 +34,8 @@ export interface ClassifierRequest {
   readonly prompt: string;
   readonly tiers: readonly string[];
   readonly criteria: Readonly<Record<string, TierCriterion>>;
+  /** Bounded, redacted earlier conversation. Absent: the request is prompt-only. */
+  readonly context?: ConversationContext;
 }
 
 /** Transport contract for direct classifier backends (typesafe, pi-native). */

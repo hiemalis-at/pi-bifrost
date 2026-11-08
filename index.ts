@@ -8,8 +8,9 @@ import {
   createPipeline,
   type ClassificationPipeline,
   type ClassificationResult,
+  type PipelineDeps,
 } from "./classification-pipeline.ts";
-import type { ClassificationJudgment } from "./classifier-backends.ts";
+import { shouldCacheResult } from "./conversation-options.ts";
 import {
   cachePath,
   lookupCache,
@@ -25,6 +26,7 @@ import {
 import {
   loadConfig,
   loadRules,
+  contextOptInIgnoredWarning,
   configHasNoPools,
   DEFAULT_CLASSIFIER_CRITERIA,
   validateConfig,
@@ -42,7 +44,7 @@ import {
 } from "./routing.ts";
 import { ReliabilityStore } from "./reliability-store.ts";
 import { loadRuntimeState, runtimeStatePath, saveRuntimeState, isPassiveModelSelection, createSelfSelectTracker } from "./runtime-state.ts";
-import { createCommandRouter, getBifrostCommandCompletions, runBifrostCommand, log, uiBusy, uiDone, syncBifrostModeStatus, clearBifrostWidgets, type BifrostState } from "./commands.ts";
+import { classifyOptionsFor, createCommandRouter, getBifrostCommandCompletions, runBifrostCommand, log, uiBusy, uiDone, syncBifrostModeStatus, clearBifrostWidgets, type BifrostState } from "./commands.ts";
 import { setupDebug, debug, debugMeasure } from "./debug.ts";
 import { parseInlineOverride } from "./inline-override.ts";
 import { BIFROST_AUTO_ID, BIFROST_AUTO_PROVIDER, isBifrostAuto, isVirtualModel } from "./virtual-model.ts";
@@ -119,7 +121,7 @@ function buildPipeline(
   // Resolve classifier models once at pipeline construction.
   // If classifier is disabled, pass empty array — pipeline skips LLM stage.
   let classifierModels: ClassifierModel[] = [];
-  let classifyDirect: ((text: string, tiers: readonly string[], signal?: AbortSignal) => Promise<ClassificationJudgment | undefined>) | undefined;
+  let classifyDirect: PipelineDeps["classifyDirect"];
   const directConfigOk = !hasClassifierConfigErrors(config, effective.backend);
   const plan = directStagePlan({
     backend: effective.backend,
@@ -145,8 +147,8 @@ function buildPipeline(
       reliability: reliabilityStore,
       observe: (observation) => classifierMetricsStore.record(observation),
     });
-    classifyDirect = async (text, availableTiers, signal) => {
-      const judgment = await classify({ prompt: boundedClassifierPrompt(text), tiers: availableTiers, criteria: classifierConfig.criteria ?? DEFAULT_CLASSIFIER_CRITERIA }, signal);
+    classifyDirect = async (text, availableTiers, signal, context) => {
+      const judgment = await classify({ prompt: boundedClassifierPrompt(text), tiers: availableTiers, criteria: classifierConfig.criteria ?? DEFAULT_CLASSIFIER_CRITERIA, ...(context ? { context } : {}) }, signal);
       return judgment;
     };
   }
@@ -165,8 +167,8 @@ function buildPipeline(
       ),
       observe: (observation) => classifierMetricsStore.record(observation),
     });
-    classifyDirect = async (text, availableTiers, signal) => {
-      const judgment = await classify({ prompt: boundedClassifierPrompt(text), tiers: availableTiers, criteria: config.classifier?.criteria ?? DEFAULT_CLASSIFIER_CRITERIA }, signal);
+    classifyDirect = async (text, availableTiers, signal, context) => {
+      const judgment = await classify({ prompt: boundedClassifierPrompt(text), tiers: availableTiers, criteria: config.classifier?.criteria ?? DEFAULT_CLASSIFIER_CRITERIA, ...(context ? { context } : {}) }, signal);
       return judgment;
     };
   }
@@ -237,6 +239,8 @@ export default function bifrostExtension(pi: ExtensionAPI) {
     const tag = issue.severity === "error" ? "error" : "warning";
     console.error(`[bifrost/config] ${tag}: ${issue.message}`);
   }
+  const ignoredContextOptIn = contextOptInIgnoredWarning(process.cwd(), extensionDir);
+  if (ignoredContextOptIn) console.error(`[bifrost/config] warning: ${ignoredContextOptIn}`);
   const cacheTtlMs = (config.cache?.ttlHours ?? DEFAULT_TTL_HOURS) * 60 * 60 * 1000;
   const cacheEntries = loadCache(cachePath(process.cwd(), config.cache?.path), cacheTtlMs);
   const reliabilityStore = new ReliabilityStore({ cwd: process.cwd(), config: config.reliability });
@@ -359,7 +363,7 @@ export default function bifrostExtension(pi: ExtensionAPI) {
 
   function saveClassifierDecision(prompt: string, result: ClassificationResult): void {
     try {
-      if (result.kind !== "classified" || result.source !== "classifier"
+      if (result.kind !== "classified" || !shouldCacheResult(result)
         || !classifierCacheEnabled(state.config, effectiveBackendOf(state.config, detectionEngine).backend)) return;
       const maxEntries = state.config.cache?.maxEntries ?? DEFAULT_MAX_ENTRIES;
       state.cacheEntries = updateCache(state.cacheEntries, prompt, result.tier, maxEntries, activeClassifierCacheKey(state.config, detectionEngine));
@@ -442,7 +446,7 @@ export default function bifrostExtension(pi: ExtensionAPI) {
           }
           const classification: ClassificationResult = forcedTier
             ? { kind: "classified", tier: forcedTier, source: "inline" }
-            : await getPipeline(ctx).classify(prompt, signal);
+            : await getPipeline(ctx).classify(prompt, signal, classifyOptionsFor(ctx, state));
           if (signal?.aborted) throw new Error("Bifrost: route aborted");
           if (classification.kind === "unclassified") throw new Error("Bifrost: no configured tier for virtual request");
           const classifierIdentity = classification.kind === "classified" && classification.judgment
@@ -473,7 +477,7 @@ export default function bifrostExtension(pi: ExtensionAPI) {
           }
           debug("virtual", "select", { tier: classification.tier, model: modelKey(model), source: classification.kind === "classified" ? classification.source : "fallback", ...classifierIdentity, skipped: resolved.skipped });
           saveClassifierDecision(prompt, classification);
-          log(ctx, `Bifrost auto: ${classification.tier} → ${modelKey(model)} (${classification.kind === "classified" ? classification.source : "fallback"}${resolved.fallbackReason ? `; ${resolved.fallbackReason}` : ""}${resolved.skipped.length > 0 ? `; ${resolved.skipped.length} skipped: ${resolved.skipped.map((s) => s.key).join(", ")}` : ""})`);
+          log(ctx, `Bifrost auto: ${classification.tier} → ${modelKey(model)} (${classification.kind === "classified" ? classification.source : "fallback"}${resolved.fallbackReason ? `; ${resolved.fallbackReason}` : ""}${resolved.skipped.length > 0 ? `; ${resolved.skipped.length} skipped: ${resolved.skipped.map((s) => s.key).join(", ")}` : ""})${classification.context?.sent ? " +context" : ""}`);
           return model;
         },
         onDispatch: (model, thinkingLevel, intent) => {
@@ -666,11 +670,11 @@ export default function bifrostExtension(pi: ExtensionAPI) {
       const endClassify = debugMeasure("input", "classify");
       const classification = forcedTier
         ? { kind: "classified" as const, tier: forcedTier, source: "inline" as const }
-        : await getPipeline(ctx).classify(promptText, ctx.signal);
+        : await getPipeline(ctx).classify(promptText, ctx.signal, classifyOptionsFor(ctx, state));
 
       if (classification.kind === "classified") {
         const tag = classification.source === "inline" ? "!" : classification.source;
-        console.error(`[bifrost] classify: ${classification.tier} [${tag}]`);
+        console.error(`[bifrost] classify: ${classification.tier} [${tag}]${classification.kind === "classified" && classification.context?.sent ? " +context" : ""}`);
       }
 
       endClassify({ kind: classification.kind, tier: classification.kind !== "unclassified" ? classification.tier : undefined });
@@ -738,10 +742,7 @@ export default function bifrostExtension(pi: ExtensionAPI) {
         return defaultAction;
       }
 
-      if (
-        classification.kind === "classified" &&
-        classification.source === "classifier"
-      ) {
+      if (classification.kind === "classified" && shouldCacheResult(classification)) {
         const maxEntries = state.config.cache?.maxEntries ?? DEFAULT_MAX_ENTRIES;
         if (classifierCacheEnabled(state.config, effectiveBackendOf(state.config, detectionEngine).backend)) {
           const endCacheSave = debugMeasure("input", "cacheSave");

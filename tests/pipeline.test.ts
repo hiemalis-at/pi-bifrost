@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createPipeline, type PipelineDeps } from "../classification-pipeline.ts";
+import type { ConversationContext } from "../conversation-context.ts";
+import { shouldCacheResult } from "../conversation-options.ts";
 import { makeClassifierModel } from "./helpers.ts";
 
 function deps(overrides: Partial<PipelineDeps> = {}): PipelineDeps {
@@ -348,6 +350,163 @@ describe("classification-pipeline", () => {
       if (r.kind === "fallback") {
         assert.equal(r.tier, "economical");
       }
+    });
+  });
+
+  describe("context", () => {
+    const context: ConversationContext = {
+      exchanges: [{ user: "plan the migration", assistant: "Here is the plan.", tier: "frontier" }],
+      omittedEarlierTurns: false,
+      chars: 35,
+      redactions: 0,
+      truncated: false,
+    };
+
+    it("context is passed to classifyDirect", async () => {
+      let received: unknown;
+      const p = createPipeline(deps({
+        classifyDirect: async (_text, _tiers, _signal, ctx) => {
+          received = ctx;
+          return { tier: "economical", backend: "pi-native", contextSent: true };
+        },
+      }));
+      const r = await p.classify("Approved", undefined, { context });
+      assert.equal(received, context);
+      assert.equal(r.kind, "classified");
+      if (r.kind === "classified") {
+        assert.equal(r.tier, "economical");
+        assert.equal(r.judgment?.contextSent, true);
+        assert.deepEqual(r.context, { sent: true, used: true });
+      }
+    });
+
+    it("classifyDirect receives no context and the result has none without options", async () => {
+      let received: unknown = "unset";
+      const p = createPipeline(deps({
+        classifyDirect: async (_text, _tiers, _signal, ctx) => {
+          received = ctx;
+          return { tier: "economical", backend: "pi-native" };
+        },
+      }));
+      const r = await p.classify("Approved");
+      assert.equal(received, undefined);
+      assert.equal(r.kind, "classified");
+      if (r.kind === "classified") assert.equal("context" in r, false);
+    });
+
+    it("cache lookup is skipped when context is present", async () => {
+      let lookups = 0;
+      const p = createPipeline(deps({
+        cacheLookup: () => { lookups++; return "frontier"; },
+        classifyDirect: async () => ({ tier: "economical", backend: "typesafe", contextSent: true }),
+      }));
+      const r = await p.classify("Approved", undefined, { context });
+      assert.equal(lookups, 0);
+      assert.equal(r.kind, "classified");
+      if (r.kind === "classified") assert.equal(r.source, "classifier");
+    });
+
+    it("cache lookup still runs without context", async () => {
+      let lookups = 0;
+      const p = createPipeline(deps({
+        cacheLookup: () => { lookups++; return "frontier"; },
+        classifyDirect: async () => ({ tier: "economical", backend: "typesafe" }),
+      }));
+      const r = await p.classify("Approved");
+      assert.equal(lookups, 1);
+      assert.equal(r.kind, "classified");
+      if (r.kind === "classified") assert.equal(r.source, "cache");
+    });
+
+    it("cache lookup still runs when there is no direct classifier to send context to", async () => {
+      let lookups = 0;
+      const p = createPipeline(deps({ cacheLookup: () => { lookups++; return "frontier"; } }));
+      const r = await p.classify("Approved", undefined, { context });
+      assert.equal(lookups, 1);
+      assert.equal(r.kind, "classified");
+      if (r.kind === "classified") {
+        assert.equal(r.source, "cache");
+        assert.equal(r.context, undefined);
+      }
+    });
+
+    it("context-fed miss falls through to the default tier and reports used: false", async () => {
+      const p = createPipeline(deps({
+        classifyDirect: async () => undefined,
+        defaultTier: "economical",
+      }));
+      const r = await p.classify("Approved", undefined, { context });
+      assert.equal(r.kind, "fallback");
+      if (r.kind === "fallback") {
+        assert.equal(r.tier, "economical");
+        assert.deepEqual(r.context, { sent: true, used: false });
+      }
+    });
+
+    it("context-fed invalid tier falls through and reports used: false", async () => {
+      const p = createPipeline(deps({
+        classifyDirect: async () => ({ tier: "unknown", backend: "pi-native", contextSent: true }),
+        defaultTier: "economical",
+      }));
+      const r = await p.classify("Approved", undefined, { context });
+      assert.equal(r.kind, "fallback");
+      if (r.kind === "fallback") assert.deepEqual(r.context, { sent: true, used: false });
+    });
+
+    it("a classifier answer is not changed by exchange tiers", async () => {
+      const plannerContext: ConversationContext = {
+        ...context,
+        exchanges: [{ user: "plan it", assistant: "Plan: step 1, step 2.", tier: "planner" }],
+      };
+      const p = createPipeline(deps({
+        tiers: ["planner", "worker"],
+        defaultTier: "planner",
+        classifyDirect: async () => ({ tier: "worker", backend: "pi-native", contextSent: true }),
+      }));
+      const r = await p.classify("Approved", undefined, { context: plannerContext });
+      assert.equal(r.kind, "classified");
+      if (r.kind === "classified") {
+        assert.equal(r.tier, "worker");
+        assert.equal(r.source, "classifier");
+        assert.deepEqual(r.context, { sent: true, used: true });
+      }
+    });
+
+    it("no context outcome when there is no direct classifier to send it to", async () => {
+      const p = createPipeline(deps({ defaultTier: "economical" }));
+      const r = await p.classify("Approved", undefined, { context });
+      assert.equal(r.kind, "fallback");
+      if (r.kind === "fallback") assert.equal(r.context, undefined);
+    });
+
+    it("shouldCacheResult is false for a judgment with contextSent", () => {
+      assert.equal(shouldCacheResult({
+        kind: "classified", tier: "worker", source: "classifier",
+        judgment: { tier: "worker", backend: "pi-native", contextSent: true },
+      }), false);
+    });
+
+    it("shouldCacheResult is true for a plain classifier result", () => {
+      assert.equal(shouldCacheResult({
+        kind: "classified", tier: "worker", source: "classifier",
+        judgment: { tier: "worker", backend: "pi-native" },
+      }), true);
+      assert.equal(shouldCacheResult({ kind: "classified", tier: "worker", source: "classifier" }), true);
+    });
+
+    it("shouldCacheResult is false for a prompt-fallback answer after context was sent", () => {
+      assert.equal(shouldCacheResult({
+        kind: "classified", tier: "worker", source: "classifier",
+        judgment: { tier: "worker", backend: "prompt", model: "m1" },
+        context: { sent: true, used: false },
+      }), false);
+    });
+
+    it("shouldCacheResult is false for non-classifier results", () => {
+      assert.equal(shouldCacheResult({ kind: "classified", tier: "worker", source: "regex" }), false);
+      assert.equal(shouldCacheResult({ kind: "classified", tier: "worker", source: "cache" }), false);
+      assert.equal(shouldCacheResult({ kind: "fallback", tier: "worker" }), false);
+      assert.equal(shouldCacheResult({ kind: "unclassified" }), false);
     });
   });
 });

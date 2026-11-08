@@ -18,11 +18,11 @@
 | `/bifrost classifier` | Choose `prompt`, `typesafe`, or `pi-native`. The Pi-native picker can select a catalog model or use the default |
 | `/bifrost classifier on` | Enable configured classifier |
 | `/bifrost classifier off` | Disable classifier while retaining routing |
-| `/bifrost classifier test` | Make fresh classifier request and show result/fallback |
-| `/bifrost classifier status` | Show effective backend, detection reason, model, fallback, and safe metrics |
+| `/bifrost classifier test` | Make fresh classifier request and show result/fallback. Hands session context to the classifier when `classifier.context` is enabled |
+| `/bifrost classifier status` | Show effective backend, detection reason, model, fallback, conversation context state (`context: off`, `context: on (sent to the classifier provider)`, or `context: off (direct classifier backend required)`, or `context: off (enable it in the global config)` when a project-level `enabled: true` was ignored), and safe metrics |
 | `/bifrost debug` | Show effective routing and reliability diagnostics |
 | `/bifrost providers` | List providers available through Pi |
-| `/bifrost benchmark <prompt>` | Classify a prompt and show the outcome without generating |
+| `/bifrost benchmark <prompt>` | Classify a prompt and show the outcome without generating. Hands session context to the classifier when `classifier.context` is enabled |
 
 ## Common workflows
 
@@ -35,6 +35,16 @@
 Preview does not submit a generation turn or activate the selected model. It does run the normal tier pipeline, so an enabled prompt, TypeSafe/Jev, or Pi-native classifier can receive the preview prompt and incur classifier usage. Run `/bifrost classifier off` first for a rules-and-default-only preview.
 
 Preview does not read a tier name from the prompt. To preview a forced tier, confirm that tier's candidates and strategy in configuration instead.
+
+When the conversation has context to report, the human view includes a `context:` line:
+
+```text
+context: 2 exchanges, 1,840 chars (sent)
+context: 2 exchanges, 1,840 chars (not sent: block disabled)
+context: 2 exchanges, 1,840 chars (sent; classified without usable context)
+```
+
+`sent` means the context was handed to the classifier for this request. It does not confirm that the provider received it: an open classifier circuit or a missing credential can stop the request before it leaves. `not sent: block disabled` shows the size that enabling `classifier.context` would send. `classified without usable context` means the classifier missed or answered with low confidence, so routing fell through. The line also reports `redacted` or `truncated` when those apply. The report shows sizes and flags only, never the text. See [Conversation context](classifiers.md#conversation-context).
 
 ### Scripted preview
 
@@ -58,6 +68,7 @@ Keys are omitted when they do not apply, so test for the key itself rather than 
 | `prompt` | The prompt that was classified |
 | `source` | Where the tier came from: `cache`, `classifier`, `regex`, `inline`, or `fallback`. `cache` means the prompt was already classified in this session, so previewing it twice reports `cache` the second time; `inline` means a tier named in the prompt as an inline override |
 | `backend`, `model`, `confidence` | Classifier judgment; absent when no classifier ran |
+| `context` | Conversation context, as counts and flags only. Present when context was handed to the classifier or would be. `sent` (handed to the classifier, not proof the provider received it) and `advisory` (true when the block is disabled and the size is what enabling it would send) are always present; `used` appears only when `sent` is true; `turns`, `chars`, `redacted`, and `truncated` describe the context |
 | `tier`, `strategy` | The tier that resolved and the strategy used for it |
 | `selectedTier`, `selected` | The tier and model actually chosen; both absent when nothing resolved, so a tier named `none` is not mistaken for "no choice" |
 | `fallbackReason` | Why the requested tier could not be used; absent when it was used |

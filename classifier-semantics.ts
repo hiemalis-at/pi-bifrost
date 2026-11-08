@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BifrostConfig } from "./config.ts";
-import { CLASSIFIER_BACKEND_IDS, TYPE_SAFE_MODEL, type ClassifierBackend, type TierCriterion } from "./classifier-backends.ts";
+import { CLASSIFIER_BACKEND_IDS, TYPE_SAFE_MODEL, type ClassifierBackend, type ClassifierRequest, type TierCriterion } from "./classifier-backends.ts";
+import type { ConversationContext } from "./conversation-context.ts";
 
 const CLASSIFIER_INSTRUCTION_VERSION = 1;
 
@@ -16,6 +17,48 @@ export function criterionText(value: TierCriterion): string {
   if (typeof value === "string") return value;
   return [value.what, value.notFor ? `Not for: ${value.notFor}` : "", value.examples?.length ? `Examples: ${value.examples.join(", ")}` : ""]
     .filter(Boolean).join(" ");
+}
+
+type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject;
+type JsonObject = { [key: string]: JsonValue };
+
+// Instruction text is policy owned by #180's compiler; keep it a single constant so #180 can take it over.
+export const CONTEXT_INSTRUCTIONS =
+  "Classify the work the assistant will perform as a result of `current_prompt`, not the length of `current_prompt`. "
+  + "When `current_prompt` is a short reply (an approval, 'continue', a chosen option), the work is whatever the last item in `previous_exchanges` proposed or asked to do. "
+  + "`previous_exchanges` is earlier conversation, oldest first; each item may list the tier it ran on and the tools it used, which are information only. "
+  + "If `omitted_earlier_turns` is true, earlier turns exist that are not shown. "
+  + "Judge task complexity and consequence, not stated preference or price.";
+
+/** Narrow a request to one that carries conversation context. */
+export function hasContext(request: ClassifierRequest): request is ClassifierRequest & { readonly context: ConversationContext } {
+  return request.context !== undefined;
+}
+
+/** Object `state` for a context-bearing request. Sends nothing beyond these keys. */
+export function contextState(request: ClassifierRequest & { readonly context: ConversationContext }): JsonObject {
+  return {
+    current_prompt: request.prompt,
+    previous_exchanges: request.context.exchanges.map((exchange) => {
+      const item: { user: string; assistant: string; tier?: string; tools?: string } = { user: exchange.user, assistant: exchange.assistant };
+      if (exchange.tier !== undefined) item.tier = exchange.tier;
+      if (exchange.tools !== undefined) item.tools = exchange.tools;
+      return item;
+    }),
+    omitted_earlier_turns: request.context.omittedEarlierTurns,
+  };
+}
+
+/** Content-free description of a context, safe for traces. */
+export function contextSummary(context: ConversationContext): { readonly turns: number; readonly chars: number; readonly redacted: boolean; readonly truncated: boolean } {
+  return { turns: context.exchanges.length, chars: context.chars, redacted: context.redactions > 0, truncated: context.truncated };
+}
+
+/** Content-free trace fields for a context request: counts and flags only, never text. Empty without context. */
+export function contextTraceFields(context: ConversationContext | undefined): Record<string, unknown> {
+  if (!context) return {};
+  const summary = contextSummary(context);
+  return { context_turns: summary.turns, context_chars: summary.chars, context_redacted: summary.redacted, context_truncated: summary.truncated };
 }
 
 /** Shared direct-transport helpers (typesafe, pi-native). */

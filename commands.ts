@@ -4,10 +4,12 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { join } from "node:path";
 import { loadRuntimeState, runtimeStatePath } from "./runtime-state.ts";
 import type { BifrostConfig, ClassifierConfig } from "./config.ts";
-import { DEFAULT_CLASSIFIER_CRITERIA, DEFAULT_RULES, PROMPT_ONLY_FIELDS, loadConfig } from "./config.ts";
+import { DEFAULT_CLASSIFIER_CRITERIA, DEFAULT_RULES, PROMPT_ONLY_FIELDS, contextOptInIgnoredWarning, loadConfig } from "./config.ts";
 import type { CacheEntry } from "./cache.ts";
 import { cachePath, loadCache, saveCache, DEFAULT_MAX_ENTRIES, DEFAULT_THRESHOLD } from "./cache.ts";
 import type { ClassificationPipeline, ClassificationResult, ClassificationSource } from "./classification-pipeline.ts";
+import { buildClassifyOptions, modelVisibleEntries, type BuiltClassifyOptions } from "./conversation-options.ts";
+import { contextSummary } from "./classifier-semantics.ts";
 import { setupDebug, debug, debugMeasure } from "./debug.ts";
 import { runProbe, probeOptionsFromConfig, PROBE_PROMPT_TEXT } from "./probe.ts";
 import { setBifrostModeStatus, setBifrostStatus } from "./ux-status.ts";
@@ -51,6 +53,25 @@ export interface BifrostState {
   forceRegistryRefresh?: boolean;
   /** Recorded when detection fills an absent classifier.backend; status and test report read it (fix 12). */
   classifierDetection?: { backend: ClassifierBackend; reason: string };
+}
+
+/**
+ * Classify options for one call, shared by the turn handler, the `bifrost/auto` route and the
+ * classifying commands. Context comes from what the model sees (Pi's session projection, so
+ * context edits and compaction apply), built only when it will be used. Only preview passes
+ * `advisory`, which adds an `advisoryContext` for size reporting; strip it before `classify`.
+ */
+export function classifyOptionsFor(
+  ctx: Pick<ExtensionContext, "sessionManager">,
+  state: Pick<BifrostState, "config" | "effectiveClassifierBackend">,
+  advisory = false,
+): BuiltClassifyOptions {
+  return buildClassifyOptions({
+    config: state.config,
+    backend: state.effectiveClassifierBackend(state.config).backend,
+    branch: () => modelVisibleEntries(ctx.sessionManager),
+    ...(advisory ? { advisory: true } : {}),
+  });
 }
 
 export function log(
@@ -577,7 +598,9 @@ async function handleClassifierTest(ctx: ExtensionContext, state: BifrostState):
   const prompt = `Assess this small bounded request for tier selection. Verification nonce ${Date.now()}.`;
   let result;
   try {
-    result = await state.getPipeline(ctx).classify(prompt);
+    const pipeline = state.getPipeline(ctx);
+    const options = classifyOptionsFor(ctx, state);
+    result = await pipeline.classify(prompt, undefined, options);
   } finally {
     uiDone(ctx);
     syncBifrostModeStatus(ctx, state);
@@ -626,7 +649,9 @@ async function handleBenchmark(
   uiBusy(ctx, "Classifying benchmark prompt...");
   let classification;
   try {
-    classification = await state.getPipeline(ctx).classify(prompt);
+    const pipeline = state.getPipeline(ctx);
+    const options = classifyOptionsFor(ctx, state);
+    classification = await pipeline.classify(prompt, undefined, options);
   } finally {
     uiDone(ctx);
     syncBifrostModeStatus(ctx, state);
@@ -655,6 +680,24 @@ async function handleBenchmark(
 
   lines.push("-----------------");
   await uiResult(ctx, "Bifrost benchmark", lines);
+}
+
+/**
+ * `/bifrost classifier status` line for conversation context. "On" needs the block enabled, a
+ * direct backend, the classifier on at runtime, and a non-subagent session. When the block is
+ * off because a project-level `enabled: true` was ignored, the line says where to enable it.
+ */
+function contextStatusLine(
+  blockEnabled: boolean,
+  backend: ClassifierBackend,
+  classifierEnabled: boolean,
+  env: Record<string, string | undefined> = process.env,
+  optInIgnored = false,
+): string {
+  if (!blockEnabled && optInIgnored) return "context: off (enable it in the global config)";
+  if (!blockEnabled || !classifierEnabled || env.PI_SUBAGENT_RUN_ID) return "context: off";
+  const direct = backend === CLASSIFIER_BACKEND_IDS.typesafe || backend === CLASSIFIER_BACKEND_IDS.piNative;
+  return direct ? "context: on (sent to the classifier provider)" : "context: off (direct classifier backend required)";
 }
 
 // ── Preview report ──────────────────────────────────────────
@@ -699,6 +742,21 @@ export type BifrostPreviewSuccess = {
   readonly fallbackCandidates: string[];
   readonly defaultTier?: string;
   readonly selected?: string;
+  /** Present when context was handed to the classifier, or would have been (block disabled). Counts and flags only, never text. */
+  readonly context?: BifrostPreviewContext;
+};
+
+/** Content-free description of the conversation context behind one preview. */
+export type BifrostPreviewContext = {
+  readonly sent: boolean;
+  /** True when the block is disabled and the size is what enabling it would send. */
+  readonly advisory: boolean;
+  /** Only when sent: whether the classifier actually used the context. */
+  readonly used?: boolean;
+  readonly turns: number;
+  readonly chars: number;
+  readonly redacted: boolean;
+  readonly truncated: boolean;
 };
 
 /** No routing decision was made, so no routing field is reported. */
@@ -742,12 +800,30 @@ export function buildPreviewFailure(prompt: string, error: BifrostPreviewFailure
   return { ok: false, prompt, error };
 }
 
+/**
+ * What the preview reports about conversation context: sent (from the pipeline's outcome, sized
+ * from the context handed to it), or advisory (block disabled, sized only). Absent otherwise.
+ */
+export function buildPreviewContext(
+  built: BuiltClassifyOptions,
+  classification: Exclude<ClassificationResult, { kind: "unclassified" }>,
+): BifrostPreviewContext | undefined {
+  if (classification.context?.sent && built.context) {
+    return { sent: true, advisory: false, used: classification.context.used, ...contextSummary(built.context) };
+  }
+  if (built.advisoryContext) {
+    return { sent: false, advisory: true, ...contextSummary(built.advisoryContext) };
+  }
+  return undefined;
+}
+
 export function buildPreviewReport(input: {
   prompt: string;
   classification: Exclude<ClassificationResult, { kind: "unclassified" }>;
   display: BifrostTierDisplay;
+  context?: BifrostPreviewContext;
 }): BifrostPreviewSuccess {
-  const { prompt, classification, display } = input;
+  const { prompt, classification, display, context } = input;
   const judgment = classification.kind === "classified" ? classification.judgment : undefined;
   return {
     ok: true,
@@ -767,11 +843,23 @@ export function buildPreviewReport(input: {
     fallbackCandidates: display.fallbackCandidateLines,
     ...(display.defaultTier !== undefined ? { defaultTier: display.defaultTier } : {}),
     ...(display.selected !== undefined ? { selected: display.selected } : {}),
+    ...(context ? { context } : {}),
   };
 }
 
 export function serializePreviewReport(report: BifrostPreviewReport): string {
   return JSON.stringify(report);
+}
+
+function renderContextLine(context: BifrostPreviewContext): string {
+  const exchanges = `${context.turns} ${context.turns === 1 ? "exchange" : "exchanges"}`;
+  const flags = [context.redacted ? "redacted" : undefined, context.truncated ? "truncated" : undefined]
+    .filter((flag): flag is string => flag !== undefined);
+  const size = [exchanges, `${context.chars.toLocaleString("en-US")} chars`, ...flags].join(", ");
+  const disposition = !context.sent
+    ? "not sent: block disabled"
+    : context.used === false ? "sent; classified without usable context" : "sent";
+  return `context: ${size} (${disposition})`;
 }
 
 export function renderPreviewReport(report: BifrostPreviewSuccess): string[] {
@@ -788,6 +876,7 @@ export function renderPreviewReport(report: BifrostPreviewSuccess): string[] {
     ] : []),
     `tier:      ${report.tier}`,
     `strategy:  ${report.strategy}`,
+    ...(report.context ? [renderContextLine(report.context)] : []),
     `selected tier: ${report.selectedTier ?? PREVIEW_NONE}`,
     ...(report.fallbackReason ? [`fallback:  ${report.fallbackReason}`] : []),
     `requested candidates (${report.tier}):`,
@@ -824,8 +913,13 @@ async function handlePreview(
   setBifrostStatus(ctx, "previewing prompt...", "accent");
   uiBusy(ctx, "Classifying preview prompt...");
   let classification;
+  // Kept whole for preview reporting: its advisoryContext is reported by size only, never sent.
+  let built: BuiltClassifyOptions = {};
   try {
-    classification = await state.getPipeline(ctx).classify(prompt);
+    const pipeline = state.getPipeline(ctx);
+    built = classifyOptionsFor(ctx, state, true);
+    const { advisoryContext: _advisory, ...options } = built;
+    classification = await pipeline.classify(prompt, undefined, options);
   } finally {
     uiDone(ctx);
     syncBifrostModeStatus(ctx, state);
@@ -840,6 +934,7 @@ async function handlePreview(
     prompt,
     classification,
     display: resolveTierDisplay(classification.tier, state, ctx),
+    context: buildPreviewContext(built, classification),
   });
 
   if (json) {
@@ -1351,6 +1446,13 @@ export function createCommandRouter(
       const lines = [
         `classifier: enabled=${state.classifierEnabled}`,
         detail,
+        contextStatusLine(
+          classifier?.context?.enabled === true,
+          backend,
+          state.classifierEnabled !== false,
+          process.env,
+          contextOptInIgnoredWarning(process.cwd(), state.extensionDir) !== undefined,
+        ),
         ...(backend !== CLASSIFIER_BACKEND_IDS.prompt ? [`observations=${metrics.total}`, `outcomes=${JSON.stringify(metrics.outcomes)}`] : []),
       ];
       uiOutput(ctx, lines);

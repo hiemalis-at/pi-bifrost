@@ -100,6 +100,35 @@ A rule value containing `/` binds one exact provider/model and skips tier select
 
 Use direct bindings when role or task policy already knows the exact model. Tier strategies do not apply to direct-model rules.
 
+## Conversation context for the direct classifier
+
+By default the classifier judges each prompt on its own text. A short reply such as "approve the plan" then looks trivial, although the work it triggers may not be. The opt-in `classifier.context` block sends bounded, redacted recent conversation to the direct classifier (`typesafe` or `pi-native`) so it can judge the work a reply triggers. It is disabled by default and the prompt backend never receives it. What is sent, what is never sent, redaction, and the cache effect are described in [Conversation context](classifiers.md#conversation-context).
+
+| Key | Default | Allowed | Meaning |
+|-----|---------|---------|---------|
+| `classifier.context.enabled` | `false` | boolean | Send context with each direct classification. Only the global config (`~/.pi/agent/bifrost.json`) can turn it on; a project file can only turn it off. |
+| `classifier.context.turns` | `3` | integer 1 to 10 | Most recent exchanges to include. |
+| `classifier.context.maxChars` | `6000` | integer 500 to 16000 | Character budget, newest exchanges first. |
+| `classifier.context.includeToolSummary` | `true` | boolean | Tool names and counts per exchange. Never tool arguments or results. |
+| `classifier.context.includeTiers` | `true` | boolean | The tier each previous turn ran on, when it can be determined. |
+
+A project `bifrost.json` or `.pi/bifrost.json` can tune `turns`, `maxChars`, `includeToolSummary` and `includeTiers`, and can set `enabled` to `false`. A project-level `"enabled": true` has no effect unless the global config also enables the block, and Bifrost prints a startup warning when it ignores one. Enabling it with `backend: "prompt"` produces a config warning because nothing is sent. Stage policy such as "strong model plans, cheaper model executes" lives in your tier criteria, written by role:
+
+```json
+{
+  "classifier": {
+    "backend": "pi-native",
+    "context": { "enabled": true },
+    "criteria": {
+      "planner": "Planning, design, orchestration, review and decisions between options. Not carrying out an agreed plan.",
+      "worker": "Carrying out an agreed plan: implementation, edits, tests, mechanical follow-through. Not choosing between designs."
+    }
+  }
+}
+```
+
+A complete file is in [`examples/classifier-conversation-aware.json`](../../examples/classifier-conversation-aware.json); use it as, or merge it into, the global config. Enabling the block sends assistant text and earlier user prompts to the classifier provider, the same provider that receives the prompt. To turn it off, set `"classifier": { "context": { "enabled": false } }` in the global or a project config.
+
 ## Tier-resolution order
 
 For a normal message with routing on and nothing pinned, routing considers:

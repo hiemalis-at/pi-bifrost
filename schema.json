@@ -190,6 +190,18 @@
             ]
           }
         },
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Opt-in bounded conversation context sent to the direct classifier (typesafe, pi-native) so short replies are judged by the work they trigger. Disabled by default. The prompt backend never receives context. Context is redacted, size-limited and reported by size only; tool output and file contents are never sent.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false, "description": "Send bounded conversation context with each direct classification. Only the global config (~/.pi/agent/bifrost.json) can turn this on: a true in a project or extension-defaults config is ignored with a startup warning. A project config can set it to false." },
+            "turns": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3, "description": "Most recent exchanges to include." },
+            "maxChars": { "type": "integer", "minimum": 500, "maximum": 16000, "default": 6000, "description": "Character budget for the context, newest exchanges first." },
+            "includeToolSummary": { "type": "boolean", "default": true, "description": "Include tool names and counts for each exchange. Never tool arguments or results." },
+            "includeTiers": { "type": "boolean", "default": true, "description": "Include the tier each previous turn ran on, when it can be determined." }
+          }
+        },
         "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.8 },
         "fallback": { "type": "string", "enum": ["prompt", "regex"], "default": "prompt", "description": "Fallback after a direct classifier miss or rejected judgment. Prompt uses classifier.model; regex skips prompt classification." },
         "systemPrompt": {

@@ -23,6 +23,8 @@ Bifrost and model providers cache different things:
 
 Normalized classification-cache text can still contain sensitive terms. See [Reliability and local cache](reliability-and-cache.md#local-classification-cache) to inspect, clear, move, or disable it.
 
+A classification that sends conversation context (`classifier.context`) bypasses the local classification cache: it is neither read nor written for that classification. This is why, with the context block enabled, most classifications from the second turn of a session call the classifier again. It does not change how provider prompt caches behave for the chat model.
+
 ## One long session with N model switches
 
 Consider a session routed through this sequence:

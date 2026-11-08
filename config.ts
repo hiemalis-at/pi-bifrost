@@ -50,6 +50,20 @@ export interface PiNativeConfig {
   };
 }
 
+export const DEFAULT_CONTEXT_TURNS = 3;
+export const DEFAULT_CONTEXT_MAX_CHARS = 6000;
+
+/** Opt-in bounded conversation context sent to direct classifier backends only. Disabled by default. */
+export interface ContextConfig {
+  enabled?: boolean;
+  /** Previous exchanges to include. Integer 1 to 10. Default 3. */
+  turns?: number;
+  /** Character budget for the context. Integer 500 to 16000. Default 6000. */
+  maxChars?: number;
+  includeToolSummary?: boolean;
+  includeTiers?: boolean;
+}
+
 export interface ClassifierConfig {
   enabled?: boolean;
   backend?: ClassifierBackend;
@@ -66,6 +80,7 @@ export interface ClassifierConfig {
   piNative?: PiNativeConfig;
   minConfidence?: number;
   fallback?: "prompt" | "regex";
+  context?: ContextConfig;
 }
 
 export interface BifrostConfig {
@@ -233,6 +248,18 @@ export function validateConfig(
   const directBackend = classifier?.backend === CLASSIFIER_BACKEND_IDS.typesafe || classifier?.backend === CLASSIFIER_BACKEND_IDS.piNative;
   const directLabel = classifier?.backend === CLASSIFIER_BACKEND_IDS.piNative ? "PiNative" : "TypeSafe";
   const directKey = classifier?.backend === CLASSIFIER_BACKEND_IDS.piNative ? "piNative" : "typesafe";
+  const context = classifier?.context;
+  if (context !== undefined) {
+    if (context.turns !== undefined && (!Number.isInteger(context.turns) || context.turns < 1 || context.turns > 10)) {
+      issues.push({ severity: "error", message: `Classifier context turns must be an integer from 1 to 10, got ${context.turns}.` });
+    }
+    if (context.maxChars !== undefined && (!Number.isInteger(context.maxChars) || context.maxChars < 500 || context.maxChars > 16_000)) {
+      issues.push({ severity: "error", message: `Classifier context maxChars must be an integer from 500 to 16000, got ${context.maxChars}.` });
+    }
+    if (context.enabled === true && classifier?.backend === CLASSIFIER_BACKEND_IDS.prompt) {
+      issues.push({ severity: "warning", message: "Classifier context is enabled with the prompt backend; context is only sent to direct backends (typesafe, pi-native)." });
+    }
+  }
   if (classifier?.backend === CLASSIFIER_BACKEND_IDS.typesafe) {
     if (classifier.typesafe?.model !== undefined && classifier.typesafe.model !== TYPE_SAFE_MODEL) {
       issues.push({ severity: "error", message: `TypeSafe classifier model must be exactly "${TYPE_SAFE_MODEL}".` });
@@ -456,6 +483,7 @@ export function mergeConfig(
     merged.classifier.criteria = mergeCriteria(base.classifier?.criteria, override.classifier?.criteria);
     merged.classifier.typesafe = mergeObj(base.classifier?.typesafe, override.classifier?.typesafe);
     merged.classifier.piNative = mergeObj(base.classifier?.piNative, override.classifier?.piNative);
+    merged.classifier.context = mergeObj(base.classifier?.context, override.classifier?.context);
     if (merged.classifier.backend === CLASSIFIER_BACKEND_IDS.typesafe || merged.classifier.backend === CLASSIFIER_BACKEND_IDS.piNative) {
       const mergedClassifier = merged.classifier as Record<string, unknown>;
       const overrideClassifier = override.classifier as Record<string, unknown> | undefined;
@@ -500,17 +528,51 @@ export function loadConfig(
     rules: DEFAULT_RULES,
   };
 
-  const configs = [
-    readJson<BifrostConfig>(join(extensionDir, "bifrost.json")),
-    readJson<BifrostConfig>(join(getAgentDir(), "bifrost.json")),
-    readJson<BifrostConfig>(join(cwd, "bifrost.json")),
-    readJson<BifrostConfig>(join(cwd, CONFIG_DIR_NAME, "bifrost.json")),
-  ];
+  const layers = readConfigLayers(cwd, extensionDir);
   let merged: BifrostConfig = base;
-  for (const cfg of configs) {
+  for (const cfg of [layers.extension, layers.global, ...layers.project]) {
     if (cfg) merged = mergeConfig(merged, cfg);
   }
+  // `classifier.context.enabled` sends conversation text to the classifier provider. Only the
+  // global config may turn it on; a project layer may only tune the other keys or turn it off.
+  const context = merged.classifier?.context;
+  if (context) {
+    const projectOptOut = layers.project.some((cfg) => cfg?.classifier?.context?.enabled === false);
+    const enabled = !projectOptOut && layers.global?.classifier?.context?.enabled === true;
+    if (enabled || context.enabled !== undefined) context.enabled = enabled;
+  }
   return merged;
+}
+
+interface ConfigLayers {
+  extension: BifrostConfig | undefined;
+  global: BifrostConfig | undefined;
+  /** Project layers in merge order: `cwd/bifrost.json`, then `cwd/<CONFIG_DIR_NAME>/bifrost.json`. */
+  project: (BifrostConfig | undefined)[];
+}
+
+function readConfigLayers(cwd: string, extensionDir: string): ConfigLayers {
+  return {
+    extension: readJson<BifrostConfig>(join(extensionDir, "bifrost.json")),
+    global: readJson<BifrostConfig>(join(getAgentDir(), "bifrost.json")),
+    project: [
+      readJson<BifrostConfig>(join(cwd, "bifrost.json")),
+      readJson<BifrostConfig>(join(cwd, CONFIG_DIR_NAME, "bifrost.json")),
+    ],
+  };
+}
+
+/**
+ * The startup warning for a `classifier.context.enabled: true` that `loadConfig` ignored: set in
+ * the extension-defaults or a project layer while the global config does not enable it.
+ * Undefined when nothing was ignored.
+ */
+export function contextOptInIgnoredWarning(cwd: string, extensionDir: string): string | undefined {
+  const layers = readConfigLayers(cwd, extensionDir);
+  if (layers.global?.classifier?.context?.enabled === true) return undefined;
+  const ignored = [layers.extension, ...layers.project].some((cfg) => cfg?.classifier?.context?.enabled === true);
+  if (!ignored) return undefined;
+  return `classifier.context.enabled is ignored in project config; enable it in the global config (${join(getAgentDir(), "bifrost.json")})`;
 }
 
 export function loadRules(cwd: string, config: BifrostConfig): RouteRule[] {

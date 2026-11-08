@@ -7,9 +7,12 @@ import { setupDebug } from "../debug.ts";
 import {
   TYPESAFE_MODEL,
   TYPESAFE_SYSTEMONE_URL,
+  buildTypeSafeRequest,
   createTypeSafeClassifier,
   decodeTypeSafeJudgment,
 } from "../typesafe-classifier.ts";
+import { CONTEXT_INSTRUCTIONS } from "../classifier-semantics.ts";
+import type { ConversationContext } from "../conversation-context.ts";
 import { ReliabilityStore } from "../reliability-store.ts";
 import { emptyReliabilityState } from "../reliability.ts";
 
@@ -171,6 +174,66 @@ describe("TypeSafe classifier", () => {
       assert.doesNotMatch(trace, /prompt-sentinel|criteria-sentinel|api-key-sentinel|transport-error-sentinel/);
       assert.match(trace, /"event":"transport_error"/);
       assert.match(trace, /"category":"network"/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("buildTypeSafeRequest without context keeps state as the prompt string and the old instruction", () => {
+    const body = buildTypeSafeRequest({ prompt: "hello", tiers: ["quick", "general", "frontier"], criteria }) as { state: unknown; questions: { tier: { instructions: string } } };
+    assert.equal(body.state, "hello");
+    assert.notEqual(body.questions.tier.instructions, CONTEXT_INSTRUCTIONS);
+    assert.match(body.questions.tier.instructions, /Which model tier best fits/);
+  });
+
+  it("buildTypeSafeRequest with context sends the object state and CONTEXT_INSTRUCTIONS", () => {
+    const context: ConversationContext = {
+      exchanges: [{ user: "add retry", assistant: "Shall I proceed?", tier: "general", tools: "edit x2" }, { user: "and docs?", assistant: "Sure." }],
+      omittedEarlierTurns: false,
+      chars: 40,
+      redactions: 0,
+      truncated: false,
+    };
+    const body = buildTypeSafeRequest({ prompt: "yes", tiers: ["quick", "general", "frontier"], criteria, context }) as { state: unknown; questions: { tier: { instructions: string } } };
+    assert.deepEqual(body.state, {
+      current_prompt: "yes",
+      previous_exchanges: [{ user: "add retry", assistant: "Shall I proceed?", tier: "general", tools: "edit x2" }, { user: "and docs?", assistant: "Sure." }],
+      omitted_earlier_turns: false,
+    });
+    assert.equal(body.questions.tier.instructions, CONTEXT_INSTRUCTIONS);
+  });
+
+  it("CONTEXT_INSTRUCTIONS names the fields and the work-performed rule", () => {
+    assert.ok(CONTEXT_INSTRUCTIONS.includes("current_prompt"));
+    assert.ok(CONTEXT_INSTRUCTIONS.includes("previous_exchanges"));
+    assert.ok(CONTEXT_INSTRUCTIONS.includes("omitted_earlier_turns"));
+    assert.ok(CONTEXT_INSTRUCTIONS.includes("work the assistant will perform"));
+  });
+
+  it("marks judgments contextSent only for context requests", async () => {
+    const classifier = createTypeSafeClassifier({ apiKey: "key", fetchImpl: async () => new Response(JSON.stringify(payload()), { status: 200 }) });
+    const context: ConversationContext = { exchanges: [], omittedEarlierTurns: false, chars: 0, redactions: 0, truncated: false };
+    const withContext = await classifier({ prompt: "yes", tiers: ["quick", "general", "frontier"], criteria, context });
+    const without = await classifier({ prompt: "yes", tiers: ["quick", "general", "frontier"], criteria });
+    assert.equal(withContext?.contextSent, true);
+    assert.equal("contextSent" in (without ?? {}), false);
+  });
+
+  it("keeps exchange and prompt text out of context-request debug traces", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "bifrost-typesafe-ctx-debug-"));
+    const path = join(cwd, "trace.jsonl");
+    try {
+      setupDebug({ enabled: true, path }, cwd);
+      const context: ConversationContext = {
+        exchanges: [{ user: "user-sentinel-xyz", assistant: "assistant-sentinel-xyz", tools: "tools-sentinel-xyz" }],
+        omittedEarlierTurns: false, chars: 10, redactions: 2, truncated: true,
+      };
+      const classifier = createTypeSafeClassifier({ apiKey: "key", debug: true, maxAttempts: 1, fetchImpl: async () => new Response(JSON.stringify(payload()), { status: 200 }) });
+      await classifier({ prompt: "prompt-sentinel-xyz", tiers: ["quick", "general", "frontier"], criteria, context });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const trace = readFileSync(path, "utf8");
+      assert.match(trace, /context_turns/);
+      assert.doesNotMatch(trace, /sentinel-xyz/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

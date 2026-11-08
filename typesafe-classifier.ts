@@ -4,7 +4,7 @@ import type { ReliabilityStore } from "./reliability-store.ts";
 import { debug as bifrostDebug } from "./debug.ts";
 import type { TypeSafeObservation, TypeSafeOutcome } from "./classifier-metrics.ts";
 import { CLASSIFIER_BACKEND_IDS, TYPE_SAFE_API_KEY_ENV, TYPE_SAFE_CREDENTIAL_KEY, TYPE_SAFE_ENDPOINT, TYPE_SAFE_MODEL, type ClassificationJudgment, type ClassifierRequest } from "./classifier-backends.ts";
-import { abortableDelay, criterionText, finite, sleep } from "./classifier-semantics.ts";
+import { CONTEXT_INSTRUCTIONS, abortableDelay, contextState, contextTraceFields, criterionText, finite, hasContext, sleep } from "./classifier-semantics.ts";
 
 /** Compatibility exports for the TypeSafe provider seam and benchmark. */
 export const TYPESAFE_SYSTEMONE_URL = TYPE_SAFE_ENDPOINT;
@@ -46,12 +46,14 @@ export function buildTypeSafeRequest(input: TypeSafeInput): Record<string, unkno
   const criteria: Record<string, string> = {};
   for (const tier of input.tiers) criteria[tier] = criterionText(input.criteria[tier] ?? tier);
   return {
-    state: input.prompt,
+    state: hasContext(input) ? contextState(input) : input.prompt,
     model: TYPESAFE_MODEL,
     questions: {
       tier: {
         type: "choice",
-        instructions: "Which model tier best fits this coding-agent request? Judge task complexity and consequence, not stated preference or price.",
+        instructions: input.context
+          ? CONTEXT_INSTRUCTIONS
+          : "Which model tier best fits this coding-agent request? Judge task complexity and consequence, not stated preference or price.",
         criteria,
       },
     },
@@ -206,7 +208,7 @@ export function createTypeSafeClassifier(options: TypeSafeOptions = {}) {
     const trace = (event: string, meta: Record<string, unknown> = {}) => {
       if (options.debug) bifrostDebug(CLASSIFIER_BACKEND_IDS.typesafe, event, { trace_id: traceId, model: TYPESAFE_MODEL, ...meta });
     };
-    trace("start", { tiers: input.tiers, prompt_length: input.prompt.length, timeout_ms: timeoutMs, max_attempts: maxAttempts });
+    trace("start", { tiers: input.tiers, prompt_length: input.prompt.length, ...contextTraceFields(input.context), timeout_ms: timeoutMs, max_attempts: maxAttempts });
     let attempts = 0;
     let observed = false;
     let trialClaimed = false;
@@ -294,7 +296,8 @@ export function createTypeSafeClassifier(options: TypeSafeOptions = {}) {
         if (response.ok) {
           phase = "body";
           const body = await readResponseJson(response, controller.signal);
-          const judgment = decodeTypeSafeJudgment(body, input.tiers, 0);
+          const decoded = decodeTypeSafeJudgment(body, input.tiers, 0);
+          const judgment = decoded && input.context ? { ...decoded, contextSent: true } : decoded;
           trace("decoded", { attempt, tier: judgment?.tier, confidence: judgment?.confidence, valid: Boolean(judgment) });
           if (!judgment) {
             recordFailure("decoder");
