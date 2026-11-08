@@ -43,6 +43,7 @@ import {
   type SkippedCandidate,
 } from "./routing.ts";
 import { ReliabilityStore } from "./reliability-store.ts";
+import { isQuotaExhausted } from "./reliability.ts";
 import { loadRuntimeState, runtimeStatePath, saveRuntimeState, isPassiveModelSelection, createSelfSelectTracker } from "./runtime-state.ts";
 import { classifyOptionsFor, createCommandRouter, getBifrostCommandCompletions, runBifrostCommand, log, uiBusy, uiDone, syncBifrostModeStatus, clearBifrostWidgets, type BifrostState } from "./commands.ts";
 import { setupDebug, debug, debugMeasure } from "./debug.ts";
@@ -542,7 +543,13 @@ export default function bifrostExtension(pi: ExtensionAPI) {
     for (const outcome of settled) {
       state.reliabilityStore.recordSettled(outcome.model, outcome.reason);
       if (outcome.reason) {
-        log(ctx, `Bifrost: recorded provider failure for ${outcome.model}; future prompts may route around it.`, "warning");
+        const openUntil = state.reliabilityStore.getCircuitState(outcome.model).openUntil;
+        const skipping = openUntil !== undefined && openUntil > Date.now();
+        log(ctx, isQuotaExhausted(outcome.reason) && skipping
+          ? `Bifrost: ${outcome.model} is out of quota or credit; skipping it until ${new Date(openUntil).toLocaleTimeString()}. Send your prompt again to use the next model.`
+          : skipping
+            ? `Bifrost: ${outcome.model} keeps failing; skipping it until ${new Date(openUntil).toLocaleTimeString()}.`
+            : `Bifrost: recorded provider failure for ${outcome.model}; future prompts may route around it.`, "warning");
       }
     }
   });

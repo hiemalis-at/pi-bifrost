@@ -23,13 +23,15 @@ After configured repeated failures inside a time window, Bifrost opens that mode
 }
 ```
 
-Reliability state persists in `.pi/bifrost-reliability.json`. After cooldown, Bifrost may try that model once. Success restores it; failure keeps it excluded longer.
+A quota, billing or usage-limit error (for example `insufficient_quota`, "quota has been exhausted", "credit balance is too low", HTTP 402) opens the circuit on the first failure, because such an error does not clear in minutes. Your next prompt goes to the next model in the tier, and your model lists stay as they are.
+
+Reliability state persists in `.pi/bifrost-reliability.json`. After cooldown, Bifrost may try that model once. Success restores it; failure keeps it excluded longer, doubling the cooldown each time.
 
 Bifrost never automatically replays the prompt that failed. Reliability affects future user turns only.
 
 ## Reliability is not quota enforcement
 
-A circuit records observed model health. It does not know authoritative provider weekly quota unless Pi or the provider exposes that information.
+A circuit records observed model health. It does not know authoritative provider weekly quota unless Pi or the provider exposes that information. A quota error opens the circuit at once, but the first prompt that hits it still fails.
 
 Current safeguards for quota-sensitive models:
 
