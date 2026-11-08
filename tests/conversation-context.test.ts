@@ -391,6 +391,33 @@ describe("buildConversationContext", () => {
     assert.equal(ctx.truncated, true);
   });
 
+  it("keeps the start and the closing question of a long assistant reply", () => {
+    const reply = `PLAN-START ${"x".repeat(PER_ASSISTANT_CAP * 2)} Shall I proceed with option B?`;
+    const ctx = buildConversationContext(
+      [user("plan it"), assistant([text(reply)]), user("B")],
+      { ...OPTS, maxChars: 16000 },
+      noTier,
+    );
+    assert.ok(ctx);
+    const kept = ctx.exchanges[0].assistant;
+    assert.ok(kept.length <= PER_ASSISTANT_CAP);
+    assert.ok(kept.startsWith("PLAN-START"), "start kept");
+    assert.ok(kept.endsWith("Shall I proceed with option B?"), "ending kept");
+    assert.ok(kept.includes("…"), "cut is marked");
+    assert.equal(ctx.truncated, true);
+  });
+
+  it("keeps the closing question when the newest exchange is shrunk to fit the budget", () => {
+    const ctx = buildConversationContext(
+      [user("u".repeat(900)), assistant([text(`${"a".repeat(1900)} Approve?`)])],
+      { ...OPTS, maxChars: 500 },
+      noTier,
+    );
+    assert.ok(ctx);
+    assert.ok(ctx.chars <= 500);
+    assert.ok(ctx.exchanges[0].assistant.endsWith("Approve?"));
+  });
+
   it("keeps newest exchanges within maxChars and drops older whole exchanges", () => {
     const entries = [
       user("old".repeat(100)),
