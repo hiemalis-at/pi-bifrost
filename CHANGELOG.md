@@ -13,6 +13,7 @@ All notable changes to pi-bifrost are documented here.
 ### Fixed
 - Subagent sessions started by current pi-subagents were not recognized: Bifrost looked for `PI_SUBAGENT_RUN_ID`, which pi-subagents no longer sets, and a foreground child shares the parent's process. Bifrost now recognizes a child from pi-subagents' start markers at `session_start` and remembers it per session, so a recognized subagent session never sends conversation context, and `/bifrost classifier status` shows `context: off (subagent session)`. Recognition is best-effort: a foreground child launched without extension bindings carries no marker.
 - Long assistant replies in conversation context keep their end, where the question a short reply answers usually is.
+- A config with its own tier names no longer reports `Category strategy for tier "quick" — tier not found` (and the same for `general` and `frontier`) at every start. Once the global or a project config defines tiers, a built-in default tier it never mentions and that has no models is dropped, together with default strategies for tiers that do not exist. A strategy you set for a missing tier is still reported.
 
 ### Changed
 - A classification that sends context neither reads nor writes the local classification cache. With the context block enabled, most classifications from the second turn of a session call the classifier again.

@@ -525,6 +525,27 @@ export function mergeConfig(
   return merged;
 }
 
+/**
+ * The built-in and shipped defaults name the tiers quick, general and frontier. Once the user's
+ * own layers (global, project) define tiers, a default tier they never mention and that has no
+ * models only produces config errors, so it is dropped, and so is a default strategy for a tier
+ * that does not exist. A strategy the user set for a missing tier stays, so validation reports it.
+ */
+function dropUnusedDefaultTiers(merged: BifrostConfig, userLayers: readonly (BifrostConfig | undefined)[]): void {
+  const userTiers = new Set(userLayers.flatMap((layer) => Object.keys(layer?.models ?? {})));
+  if (userTiers.size === 0) return;
+  const userStrategies = new Set(userLayers.flatMap((layer) => Object.keys(layer?.categoryStrategies ?? {})));
+  const models = merged.models ?? {};
+  for (const [tier, pool] of Object.entries(models)) {
+    const empty = Array.isArray(pool) ? pool.length === 0 : !pool;
+    if (empty && !userTiers.has(tier)) delete models[tier];
+  }
+  const strategies = merged.categoryStrategies ?? {};
+  for (const tier of Object.keys(strategies)) {
+    if (!userStrategies.has(tier) && !Object.hasOwn(models, tier)) delete strategies[tier];
+  }
+}
+
 export function loadConfig(
   cwd: string,
   extensionDir: string,
@@ -547,6 +568,7 @@ export function loadConfig(
   for (const cfg of [layers.extension, layers.global, ...layers.project]) {
     if (cfg) merged = mergeConfig(merged, cfg);
   }
+  dropUnusedDefaultTiers(merged, [layers.global, ...layers.project]);
   // `classifier.context.enabled` sends conversation text to the classifier provider. Only the
   // global config may turn it on; a project layer may only tune the other keys or turn it off.
   const context = merged.classifier?.context;
