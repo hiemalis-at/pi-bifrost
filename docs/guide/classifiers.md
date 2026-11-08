@@ -120,7 +120,7 @@ By default a direct classifier judges each prompt on its own text. A short reply
 
 The other keys (`turns`, `maxChars`, `includeToolSummary`, `includeTiers`) and their limits are listed in [Configuration](configuration.md#conversation-context-for-the-direct-classifier).
 
-**Disclosure.** Enabling the block sends assistant text to the classifier provider. That is the provider you already chose for prompt classification, reached through the same transport. Earlier user prompts are sent as well, after redaction. To turn it off, set:
+**Disclosure.** Enabling the block sends assistant text to the classifier provider. That is the provider you already chose for prompt classification, reached through the same transport. Earlier user prompts are sent as well, after redaction. Every classification while the block is on carries context: normal messages, `bifrost/auto` requests, `/bifrost preview`, `/bifrost classifier test`, and `/bifrost benchmark`. To turn it off, set:
 
 ```json
 {
@@ -149,6 +149,8 @@ The request holds these as an object named `state`:
 
 **What is never sent.** Tool results, tool arguments, file contents, system prompts, reasoning blocks, images, and anything from a parent session.
 
+**Built from what the model sees.** Context comes from Pi's model-visible view of the session, not from the raw history. When another extension replaces an entry through a Pi context edit (for example to scrub a secret), the replacement is sent, never the original. An entry it omits is not sent, and tool calls in an omitted message are not counted. Turns that compaction summarized away are not sent either.
+
 **Treatment.**
 
 - A code fence in assistant text becomes a stub such as `[code: ts, 42 lines]`.
@@ -156,6 +158,8 @@ The request holds these as an object named `state`:
 - `maxChars` is the total budget. Turns are kept newest first. Each assistant reply is capped at 2000 characters and each user prompt at 1000. When earlier turns are dropped, `omitted_earlier_turns` is set.
 
 **When a judgment is used.** A returned judgment decides the tier, subject to the single confidence threshold `classifier.minConfidence`. If the classifier misses or answers with low confidence, routing continues exactly as it does without context: prompt classifier fallback, then regex rules, then the default tier. The preview then reports that the classification was made without usable context.
+
+Context-fed judgments often come back below `classifier.minConfidence`. Those fall through exactly as before (prompt classifier fallback, regex rules, default tier), so check `/bifrost preview` for `classified without usable context` when tuning. Lowering `classifier.minConfidence` is the knob for this; there is no second threshold.
 
 **Not sent at all.** Inline tier words and `/bifrost pin` skip classification, so nothing is sent. Subagent sessions and the prompt backend never send context.
 
@@ -170,7 +174,7 @@ The request holds these as an object named `state`:
 }
 ```
 
-**Visibility.** `/bifrost preview` reports the context it sent or would send, and `/bifrost classifier status` shows whether context is on. Reports show sizes and flags, never content. See [Commands](commands.md).
+**Visibility.** `/bifrost preview` reports the context it handed to the classifier or would hand to it, and `/bifrost classifier status` shows whether context is on. Reports show sizes and flags, never content. See [Commands](commands.md).
 
 **Scope limits.** Context changes only the tier choice made for a message. It does not re-route within a single turn: a prompt that asks for planning and implementation at once still runs on one model.
 
@@ -210,7 +214,7 @@ Repository config cannot redirect TypeSafe credentials to arbitrary origins. Typ
 /bifrost classifier status
 ```
 
-`test` makes a fresh request, and it sends session context too when `classifier.context` is enabled. `status` shows the active backend, model, fallback, and safe metrics without exposing keys. The direct TypeSafe backend also shows the credential source. Pi-native shows the catalog model or the configured `classifier.piNative.model`.
+`test` makes a fresh request. Like `/bifrost benchmark <prompt>` and `/bifrost preview`, it hands session context to the classifier too when `classifier.context` is enabled. `status` shows the active backend, model, fallback, and safe metrics without exposing keys. The direct TypeSafe backend also shows the credential source. Pi-native shows the catalog model or the configured `classifier.piNative.model`.
 
 Low confidence, missing credentials, network failure, timeout, invalid response, rate limit, or open classifier circuit follows configured fallback. User prompts are never replayed.
 

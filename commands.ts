@@ -739,7 +739,7 @@ export type BifrostPreviewSuccess = {
   readonly fallbackCandidates: string[];
   readonly defaultTier?: string;
   readonly selected?: string;
-  /** Present when context was sent to the classifier, or would have been (block disabled). Counts and flags only, never text. */
+  /** Present when context was handed to the classifier, or would have been (block disabled). Counts and flags only, never text. */
   readonly context?: BifrostPreviewContext;
 };
 

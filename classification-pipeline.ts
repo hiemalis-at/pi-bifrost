@@ -9,7 +9,7 @@ import type { ConversationContext } from "./conversation-context.ts";
 
 export type ClassificationSource = "cache" | "classifier" | "regex" | "inline";
 
-/** Present only when conversation context was sent to a direct classifier. */
+/** Present only when conversation context was handed to a direct classifier (not proof the provider received it). */
 export interface ContextOutcome {
   readonly sent: true;
   /** True when the result is the direct judgment and it carried `contextSent`. */
