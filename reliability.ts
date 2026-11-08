@@ -106,6 +106,26 @@ export function getCircuitState(
   };
 }
 
+/**
+ * Quota, billing and usage-limit errors do not clear in minutes: every request fails until the
+ * account's limit resets or is raised. Pi does not retry them either.
+ */
+const EXHAUSTED_PATTERN = new RegExp([
+  "insufficient_quota",
+  "quota[^.\\n]{0,40}\\b(?:exhausted|exceeded|reached)",
+  "exceeded[^.\\n]{0,40}\\bquota",
+  "usage[ _-]?limit",
+  "out of budget",
+  "billing",
+  "credit balance",
+  "payment required",
+  "(?<![a-z0-9])402(?![a-z0-9])",
+].join("|"), "i");
+
+export function isQuotaExhausted(reason: string | undefined): boolean {
+  return !!reason && EXHAUSTED_PATTERN.test(reason);
+}
+
 export function recordModelFailure(
   state: ReliabilityState,
   model: string,
@@ -122,7 +142,9 @@ export function recordModelFailure(
   const multiplier = wasTrial ? (current.cooldownMultiplier ?? 1) * 2 : (current.cooldownMultiplier ?? 1);
   const cooldownMs = resolved.cooldownMinutes * 60_000 * multiplier;
   const failures = [...pruneFailures(current.failures, now, resolved.windowMinutes), now];
-  const openUntil = failures.length >= resolved.failureThreshold ? now + cooldownMs : current.openUntil;
+  // A quota or billing failure opens the circuit at once; others need the threshold.
+  const opens = failures.length >= resolved.failureThreshold || isQuotaExhausted(reason);
+  const openUntil = opens ? now + cooldownMs : current.openUntil;
 
   return {
     ...state,

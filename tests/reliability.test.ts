@@ -12,6 +12,7 @@ import {
   recordModelSuccess,
   beginTrial,
   abandonTrial,
+  isQuotaExhausted,
   reliabilityPath,
   saveReliability,
 } from "../reliability.ts";
@@ -36,6 +37,44 @@ describe("reliability", () => {
     assert.equal(circuit.open, true);
     assert.equal(circuit.recentFailures, 3);
     assert.equal(circuit.openUntil, t0 + 120_000 + 60 * 60_000);
+  });
+
+  it("opens the circuit on the first quota or billing failure", () => {
+    const cfg = { ...DEFAULT_RELIABILITY, failureThreshold: 3, windowMinutes: 5, cooldownMinutes: 60 };
+    const key = "qwen-token-plan/qwen3.8-max";
+    const t0 = Date.UTC(2026, 10, 8, 18, 0, 0);
+    const quota = '429: {"message":"Your token-plan 1-month quota has been exhausted. The quota will reset at 12-05 16:00:00 UTC.","type":"insufficient_quota","code":"insufficient_quota"}';
+    const state = recordModelFailure(emptyReliabilityState(), key, cfg, t0, "agent_settled", quota);
+    const circuit = getCircuitState(state, key, t0, cfg);
+    assert.equal(circuit.open, true);
+    assert.equal(circuit.openUntil, t0 + 60 * 60_000);
+  });
+
+  it("still needs the threshold for an ordinary failure", () => {
+    const cfg = { ...DEFAULT_RELIABILITY, failureThreshold: 3, windowMinutes: 5, cooldownMinutes: 60 };
+    const t0 = Date.UTC(2026, 10, 8, 18, 0, 0);
+    const state = recordModelFailure(emptyReliabilityState(), "a/b", cfg, t0, "agent_settled", "429 Too Many Requests: rate limit");
+    assert.equal(getCircuitState(state, "a/b", t0, cfg).open, false);
+  });
+
+  it("recognizes quota, billing and usage-limit errors, not transient ones", () => {
+    for (const message of [
+      '{"type":"insufficient_quota"}',
+      "Your token-plan 1-month quota has been exhausted.",
+      "You exceeded your current quota, please check your plan and billing details.",
+      "Your credit balance is too low to access the Anthropic API.",
+      "402 Payment Required",
+      "Monthly usage limit reached",
+      "quota exceeded for metric generate_content_requests",
+    ]) assert.equal(isQuotaExhausted(message), true, message);
+    for (const message of [
+      undefined,
+      "",
+      "429 Too Many Requests: rate limit reached, retry in 2s",
+      "overloaded_error",
+      "500 Internal Server Error",
+      "request id 4021-ab",
+    ]) assert.equal(isQuotaExhausted(message), false, String(message));
   });
 
   it("does not record failures when reliability is disabled", () => {
