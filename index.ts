@@ -56,6 +56,7 @@ import { createTypeSafeClassifier, resolveTypeSafeApiKey } from "./typesafe-clas
 import { createPiNativeClassifier, piClassificationSupported } from "./classifier-pi-native.ts";
 import { collectDetectionFacts, createDetectionEngine, createDetectionNoticeGate, effectiveBackendOf, piNativeCredentialMissing, selectEffectiveBackend, type EffectiveBackend } from "./classifier-detection.ts";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { recognizeSubagentSession } from "./subagent-session.ts";
 import {
   REGISTRY_REFRESH_TTL_MS,
   setBifrostStatus,
@@ -513,6 +514,8 @@ export default function bifrostExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    // pi-subagents marks a foreground child only while it starts, so recognize it here.
+    if (recognizeSubagentSession(ctx.sessionManager)) debug("bifrost", "subagent.session", { model: modelKey(ctx.model) });
     overrideFor(ctx).clear();
     syncBifrostModeStatus(ctx, state);
     clearBifrostWidgets(ctx);
@@ -593,17 +596,21 @@ export default function bifrostExtension(pi: ExtensionAPI) {
     clearBifrostWidgets(ctx);
     // Passive subagent observation — logged even when routing is disabled,
     // so child-session model usage stays visible in debug logs.
-    if (process.env.PI_SUBAGENT_RUN_ID) {
+    if (recognizeSubagentSession(ctx.sessionManager)) {
       debug("input", "subagent", {
         source: "PI-subagent",
-        agent: process.env.PI_SUBAGENT_CHILD_AGENT,
         model: modelKey(ctx.model),
         thinkingLevel: ctx.thinkingLevel,
-        depth: process.env.PI_SUBAGENT_PARENT_DEPTH,
       });
     }
     if (!state.enabled || state.pinned) {
       debug("input", "bypass", { enabled: state.enabled, pinned: state.pinned });
+      syncBifrostModeStatus(ctx, state);
+      return { action: "continue" };
+    }
+    // autoOnly: a physical model stays as selected; only bifrost/auto is routed (in route()).
+    if (state.config.autoOnly === true && !isBifrostAuto(ctx.model)) {
+      debug("input", "bypass", { autoOnly: true, model: modelKey(ctx.model) });
       syncBifrostModeStatus(ctx, state);
       return { action: "continue" };
     }

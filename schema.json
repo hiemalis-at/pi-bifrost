@@ -10,6 +10,11 @@
       "description": "Enable or disable routing. When disabled, Bifrost does not switch models for new turns. Pi uses the selected physical model.",
       "default": true
     },
+    "autoOnly": {
+      "type": "boolean",
+      "description": "Route only while bifrost/auto is the selected model. With a physical model selected, Bifrost leaves it unchanged, so a subagent launched on an explicit model keeps it while one launched on bifrost/auto is routed.",
+      "default": false
+    },
     "default": {
       "type": "string",
       "description": "Model tier to use when no rule matches and the classifier returns no category. Must match a key in 'models'.",

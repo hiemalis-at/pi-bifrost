@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_RULES, contextOptInIgnoredWarning, loadConfig, loadRules } from "../config.ts";
+import { DEFAULT_RULES, contextOptInIgnoredWarning, loadConfig, loadRules, validateConfig } from "../config.ts";
 
 function writeJson(path: string, value: unknown): void {
   mkdirSync(join(path, ".."), { recursive: true });
@@ -95,6 +95,59 @@ describe("config load", () => {
       });
     } finally {
       process.env.HOME = oldHome;
+      process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(extensionDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("drops unused default tiers once the user's own layers define tiers", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "bifrost-config-"));
+    const extensionDir = mkdtempSync(join(tmpdir(), "bifrost-extension-"));
+    const home = mkdtempSync(join(tmpdir(), "bifrost-home-"));
+    const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+    try {
+      // The shipped extension defaults name quick/general/frontier with empty pools.
+      writeJson(join(extensionDir, "bifrost.json"), {
+        default: "general",
+        categoryStrategies: { quick: "random", general: "first", frontier: "first" },
+        models: { quick: [], general: [], frontier: [] },
+      });
+      writeJson(join(getAgentDir(), "bifrost.json"), {
+        default: "light",
+        categoryStrategies: { light: "first", heavy: "first", ghost: "first" },
+        models: { light: ["a/light"], heavy: ["a/heavy"] },
+      });
+      const config = loadConfig(cwd, extensionDir);
+      assert.deepEqual(Object.keys(config.models ?? {}), ["light", "heavy"]);
+      // A strategy the user set for a missing tier stays, so validation still reports it.
+      assert.deepEqual(config.categoryStrategies, { light: "first", heavy: "first", ghost: "first" });
+      const messages = validateConfig(config).map((issue) => issue.message);
+      assert.deepEqual(messages.filter((m) => /quick|general|frontier/.test(m)), []);
+      assert.ok(messages.some((m) => m.includes('"ghost"')), messages.join("\n"));
+    } finally {
+      process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(extensionDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a default tier the user fills or that already has models", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "bifrost-config-"));
+    const extensionDir = mkdtempSync(join(tmpdir(), "bifrost-extension-"));
+    const home = mkdtempSync(join(tmpdir(), "bifrost-home-"));
+    const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+    try {
+      writeJson(join(extensionDir, "bifrost.json"), { models: { quick: [], general: ["ext/general"], frontier: [] } });
+      writeJson(join(cwd, "bifrost.json"), { models: { frontier: ["p/frontier"] } });
+      const config = loadConfig(cwd, extensionDir);
+      assert.deepEqual(config.models, { general: ["ext/general"], frontier: ["p/frontier"] });
+      assert.deepEqual(config.categoryStrategies, { general: "first", frontier: "first" });
+    } finally {
       process.env.PI_CODING_AGENT_DIR = oldAgentDir;
       rmSync(cwd, { recursive: true, force: true });
       rmSync(extensionDir, { recursive: true, force: true });

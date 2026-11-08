@@ -90,6 +90,6 @@ Pinning is deliberate: it protects cost, compliance, continuity, and cache local
 
 ## Subagents
 
-Child sessions that load Bifrost start unpinned. Bifrost cannot currently determine whether a child's starting model came from an explicit per-run or role assignment. If an exact child model must remain fixed, ensure that child session does not load Bifrost.
+Child sessions that load Bifrost start unpinned. Bifrost cannot tell whether a child's starting model came from an explicit per-run or role assignment, and pi-subagents fails a run whose child ran a different model than it was launched with. Launch children that should be routed on `bifrost/auto` and set `autoOnly`, so a child launched on a physical model keeps it (see [Auto-only routing and subagents](configuration.md#auto-only-routing-and-subagents)). Foreground pi-subagents children load Bifrost only when it is listed for them, for example in `subagents.defaultSubagentOnlyExtensions`.
 
 Use fixed role/model assignments when the correct model is already known. Use adaptive routing only where task complexity can vary.

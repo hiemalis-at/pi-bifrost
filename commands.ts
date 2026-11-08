@@ -29,6 +29,7 @@ import type { EffectiveBackend } from "./classifier-detection.ts";
 import { CLASSIFIER_BACKEND_IDS, TYPE_SAFE_API_KEY_ENV, TYPE_SAFE_ENDPOINT, TYPE_SAFE_MODEL, type ClassifierBackend } from "./classifier-backends.ts";
 import { piClassificationSupported } from "./classifier-pi-native.ts";
 import { resolveTypeSafeApiKey, type TypeSafeCredentialSource } from "./typesafe-classifier.ts";
+import { isSubagentEnv, isSubagentSession } from "./subagent-session.ts";
 
 // ── Mutable state shared across commands ────────────────────
 
@@ -71,6 +72,7 @@ export function classifyOptionsFor(
     backend: state.effectiveClassifierBackend(state.config).backend,
     branch: () => modelVisibleEntries(ctx.sessionManager),
     ...(advisory ? { advisory: true } : {}),
+    ...(isSubagentSession(ctx.sessionManager) ? { subagent: true } : {}),
   });
 }
 
@@ -693,9 +695,11 @@ function contextStatusLine(
   classifierEnabled: boolean,
   env: Record<string, string | undefined> = process.env,
   optInIgnored = false,
+  subagent = false,
 ): string {
   if (!blockEnabled && optInIgnored) return "context: off (enable it in the global config)";
-  if (!blockEnabled || !classifierEnabled || env.PI_SUBAGENT_RUN_ID) return "context: off";
+  if (!blockEnabled || !classifierEnabled) return "context: off";
+  if (subagent || isSubagentEnv(env)) return "context: off (subagent session)";
   const direct = backend === CLASSIFIER_BACKEND_IDS.typesafe || backend === CLASSIFIER_BACKEND_IDS.piNative;
   return direct ? "context: on (sent to the classifier provider)" : "context: off (direct classifier backend required)";
 }
@@ -1452,6 +1456,7 @@ export function createCommandRouter(
           state.classifierEnabled !== false,
           process.env,
           contextOptInIgnoredWarning(process.cwd(), state.extensionDir) !== undefined,
+          isSubagentSession(ctx.sessionManager),
         ),
         ...(backend !== CLASSIFIER_BACKEND_IDS.prompt ? [`observations=${metrics.total}`, `outcomes=${JSON.stringify(metrics.outcomes)}`] : []),
       ];
@@ -1496,7 +1501,7 @@ export function createCommandRouter(
       if (!ctx.hasUI) {
         log(
           ctx,
-          `Bifrost: enabled=${state.enabled} pinned=${state.pinned} current=${modelKey(ctx.model)}`,
+          `Bifrost: enabled=${state.enabled} pinned=${state.pinned}${state.config.autoOnly === true ? " autoOnly=true" : ""} current=${modelKey(ctx.model)}`,
         );
         return;
       }

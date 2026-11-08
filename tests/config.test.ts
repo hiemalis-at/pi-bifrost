@@ -32,6 +32,14 @@ describe("validateConfig", () => {
     assert.equal(issues.length, 0);
   });
 
+  it("accepts a boolean autoOnly and rejects anything else", () => {
+    assert.equal(validateConfig({ ...baseConfig, autoOnly: true }).length, 0);
+    const issues = validateConfig({ ...baseConfig, autoOnly: "yes" as never });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].severity, "error");
+    assert.ok(issues[0].message.includes("autoOnly"));
+  });
+
   it("errors when models is empty (two errors: no tiers + default missing)", () => {
     const issues = validateConfig({ ...baseConfig, models: {} });
     const errors = issues.filter((i) => i.severity === "error");

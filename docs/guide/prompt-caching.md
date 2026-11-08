@@ -100,7 +100,7 @@ main session → pinned model
 unassigned child sessions → their own Bifrost routing
 ```
 
-A parent pin is session-local and does not propagate to children. Each child has its own conversation and provider/model cache history. If an exact child model assignment must never be changed, ensure that child session does not load Bifrost; current Bifrost cannot distinguish an explicit child assignment from another starting model.
+A parent pin is session-local and does not propagate to children. Each child has its own conversation and provider/model cache history. If an exact child model assignment must never be changed, set `autoOnly` and launch only the children you want routed on `bifrost/auto` (see [Auto-only routing and subagents](configuration.md#auto-only-routing-and-subagents)); otherwise Bifrost cannot distinguish an explicit child assignment from another starting model.
 
 ## Decision checklist
 
