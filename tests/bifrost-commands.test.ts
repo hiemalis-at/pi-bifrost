@@ -1803,7 +1803,7 @@ describe("conversation context visibility", () => {
       const previous = process.env.PI_SUBAGENT_RUN_ID;
       process.env.PI_SUBAGENT_RUN_ID = "run-1";
       try {
-        assert.match(await statusOutput(contextState({ enabled: true })), /^context: off$/m);
+        assert.match(await statusOutput(contextState({ enabled: true })), /^context: off \(subagent session\)$/m);
       } finally {
         if (previous === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
         else process.env.PI_SUBAGENT_RUN_ID = previous;

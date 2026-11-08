@@ -129,6 +129,35 @@ A project `bifrost.json` or `.pi/bifrost.json` can tune `turns`, `maxChars`, `in
 
 A complete file is in [`examples/classifier-conversation-aware.json`](../../examples/classifier-conversation-aware.json); use it as, or merge it into, the global config. Enabling the block sends assistant text and earlier user prompts to the classifier provider, the same provider that receives the prompt. To turn it off, set `"classifier": { "context": { "enabled": false } }` in the global or a project config.
 
+## Auto-only routing and subagents
+
+| Key | Default | Allowed | Meaning |
+|-----|---------|---------|---------|
+| `autoOnly` | `false` | boolean | Route only while `bifrost/auto` is the selected model. With a physical model selected, Bifrost leaves it unchanged and classifies nothing. |
+
+pi-subagents checks that a child ran the model it was launched with and marks the run failed when it did not (`model_verification_failed`). A child launched on `bifrost/auto` passes that check, because pi-subagents compares the virtual model, while Bifrost picks the physical model for each prompt. `autoOnly` lets the two meet: a child launched on an explicit model keeps it, and a child on `bifrost/auto` is routed. Your own session is routed when it runs on `bifrost/auto` too; with a physical model selected, Bifrost stays out of the way.
+
+Foreground pi-subagents children do not load your installed extensions, so Bifrost has to be listed for them. A setup that routes unassigned children and keeps assigned ones, in Pi's `settings.json`:
+
+```json
+{
+  "defaultProvider": "bifrost",
+  "defaultModel": "auto",
+  "subagents": {
+    "defaultModel": "bifrost/auto",
+    "defaultSubagentOnlyExtensions": ["/path/to/pi-bifrost/index.ts"]
+  }
+}
+```
+
+and in `bifrost.json`:
+
+```json
+{ "autoOnly": true }
+```
+
+A subagent session never sends conversation context. Bifrost recognizes a pi-subagents child from the markers pi-subagents sets while the child starts; a foreground child launched without extension bindings carries none, so recognition is best-effort. On its first prompt a child has no earlier exchange, so nothing would be sent anyway.
+
 ## Tier-resolution order
 
 For a normal message with routing on and nothing pinned, routing considers:

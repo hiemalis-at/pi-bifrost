@@ -2,6 +2,7 @@ import { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_TURNS, type BifrostConfig } 
 import { CLASSIFIER_BACKEND_IDS, type ClassifierBackend } from "./classifier-backends.ts";
 import type { ClassificationResult, ClassifyOptions } from "./classification-pipeline.ts";
 import { debug } from "./debug.ts";
+import { isSubagentEnv } from "./subagent-session.ts";
 import {
   buildConversationContext,
   tierForModel,
@@ -62,6 +63,8 @@ export interface ClassifyOptionsSource {
   readonly branch?: readonly SessionEntryLike[] | (() => readonly SessionEntryLike[]);
   /** Also build `advisoryContext` when the block is disabled. Only preview sets this: nothing else reads it. */
   readonly advisory?: boolean;
+  /** The session is a subagent session (recognized at `session_start`); it never sends context. */
+  readonly subagent?: boolean;
 }
 
 export interface BuiltClassifyOptions extends ClassifyOptions {
@@ -84,7 +87,7 @@ export function buildClassifyOptions(
   env: Record<string, string | undefined> = process.env,
 ): BuiltClassifyOptions {
   const { config, backend, advisory } = source;
-  if (env.PI_SUBAGENT_RUN_ID || !isDirectBackend(backend) || !source.branch) return {};
+  if (source.subagent === true || isSubagentEnv(env) || !isDirectBackend(backend) || !source.branch) return {};
   const block = config.classifier?.context;
   const enabled = block?.enabled === true;
   if (!enabled && advisory !== true) return {};

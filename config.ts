@@ -85,6 +85,13 @@ export interface ClassifierConfig {
 
 export interface BifrostConfig {
   enabled?: boolean;
+  /**
+   * Route only while `bifrost/auto` is the selected model. With a physical model selected,
+   * Bifrost leaves it unchanged. Lets subagents launched on an explicit model keep it (pi-subagents
+   * fails a run whose child ran a different model) while subagents on `bifrost/auto` are routed.
+   * Default false.
+   */
+  autoOnly?: boolean;
   default?: string;
   strategy?: RoutingStrategy;
   categoryStrategies?: Record<string, RoutingStrategy>;
@@ -399,6 +406,13 @@ export function validateConfig(
     issues.push({
       severity: "error",
       message: `Probe timeoutMs must be an integer >= 1, got ${probe.timeoutMs}.`,
+    });
+  }
+
+  if (config.autoOnly !== undefined && typeof config.autoOnly !== "boolean") {
+    issues.push({
+      severity: "error",
+      message: `autoOnly must be true or false, got ${JSON.stringify(config.autoOnly)}.`,
     });
   }
 
