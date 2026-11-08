@@ -44,9 +44,17 @@ let work: string;
 let home: string;
 let previousAgentDir: string | undefined;
 
-function harness(contextEnabled: boolean): Harness {
+/**
+ * `contextLayer` is where `classifier.context.enabled` is set: the global config (the only layer
+ * that can turn it on), the project file (ignored when true), or nowhere.
+ */
+function harness(contextEnabled: boolean, contextLayer: "global" | "project" = "global"): Harness {
   // Fresh project per harness: config, cache, reliability and runtime state live under cwd.
   rmSync(join(work, ".pi"), { recursive: true, force: true });
+  rmSync(join(home, "bifrost.json"), { force: true });
+  if (contextLayer === "global") {
+    writeFileSync(join(home, "bifrost.json"), JSON.stringify({ classifier: { context: { enabled: contextEnabled } } }));
+  }
   writeFileSync(join(work, "bifrost.json"), JSON.stringify({
     enabled: true,
     default: "quick",
@@ -58,7 +66,7 @@ function harness(contextEnabled: boolean): Harness {
       backend: "pi-native",
       piNative: { model: "typesafe/jev" },
       criteria: { quick: "small edits", general: "ordinary work", frontier: "hard work" },
-      context: { enabled: contextEnabled },
+      ...(contextLayer === "project" ? { context: { enabled: contextEnabled } } : {}),
     },
     cache: { enabled: true },
     reliability: { enabled: false },
@@ -112,6 +120,13 @@ function sessionWithHistory(): SessionManager {
 function previousExchanges(context: ClassifierContext): unknown {
   return (context.state as Record<string, unknown>).previous_exchanges;
 }
+
+const mutedErrors = async <T>(run: () => Promise<T> | T): Promise<{ result: T; errors: string[] }> => {
+  const original = console.error;
+  const errors: string[] = [];
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+  try { return { result: await run(), errors }; } finally { console.error = original; }
+};
 
 const muted = <T>(run: () => Promise<T>): Promise<T> => {
   const original = { error: console.error, warn: console.warn };
@@ -189,5 +204,22 @@ describe("index.ts context wiring", () => {
     for (const call of h.calls) assert.deepEqual(Object.keys(call.state as object), ["prompt"]);
     assert.ok(h.cached("Approved, go ahead with it"));
     assert.ok(h.cached("Continue with the second step now"));
+  });
+
+  it("a project-level enabled: true sends no context and warns once at startup", async () => {
+    const { result: h, errors } = await mutedErrors(() => harness(true, "project"));
+    const warnings = errors.filter((line) => line.includes("classifier.context.enabled is ignored in project config"));
+    assert.equal(warnings.length, 1, errors.join("\n"));
+    assert.match(warnings[0], /^\[bifrost\/config\] warning: .*enable it in the global config \(.*bifrost\.json\)$/);
+    const input = h.handlers.get("input");
+    assert.ok(input);
+    await muted(() => input({ source: "interactive", text: "Approved, go ahead with it" }, h.ctx(fast, sessionWithHistory())));
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(Object.keys(h.calls[0].state as object), ["prompt"]);
+  });
+
+  it("a global opt-in produces no startup warning", async () => {
+    const { errors } = await mutedErrors(() => harness(true));
+    assert.equal(errors.some((line) => line.includes("classifier.context.enabled")), false);
   });
 });

@@ -1773,6 +1773,29 @@ describe("conversation context visibility", () => {
       assert.match(await statusOutput(contextState({ enabled: false })), /context: off$/m);
     });
 
+    it("points to the global config when a project-level enabled: true was ignored", async () => {
+      const cwd = mkdtempSync(join(tmpdir(), "bifrost-status-cwd-"));
+      const agentDir = mkdtempSync(join(tmpdir(), "bifrost-status-agent-"));
+      const previousCwd = process.cwd();
+      const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+      writeFileSync(join(cwd, "bifrost.json"), JSON.stringify({ classifier: { context: { enabled: true } } }));
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      process.chdir(cwd);
+      try {
+        // loadConfig would have dropped the project opt-in, so the effective block is off.
+        const output = await statusOutput(contextState({ enabled: false }));
+        assert.match(output, /^context: off \(enable it in the global config\)$/m);
+        writeFileSync(join(agentDir, "bifrost.json"), JSON.stringify({ classifier: { context: { enabled: true } } }));
+        assert.match(await statusOutput(contextState({ enabled: true })), /^context: on \(sent to the classifier provider\)$/m);
+      } finally {
+        process.chdir(previousCwd);
+        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        rmSync(cwd, { recursive: true, force: true });
+        rmSync(agentDir, { recursive: true, force: true });
+      }
+    });
+
     it("shows context off in a subagent run or with the classifier toggled off at runtime", async () => {
       const toggledOff = contextState({ enabled: true });
       toggledOff.classifierEnabled = false;

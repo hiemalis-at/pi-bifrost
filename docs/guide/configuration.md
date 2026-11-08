@@ -106,13 +106,13 @@ By default the classifier judges each prompt on its own text. A short reply such
 
 | Key | Default | Allowed | Meaning |
 |-----|---------|---------|---------|
-| `classifier.context.enabled` | `false` | boolean | Send context with each direct classification. |
+| `classifier.context.enabled` | `false` | boolean | Send context with each direct classification. Only the global config (`~/.pi/agent/bifrost.json`) can turn it on; a project file can only turn it off. |
 | `classifier.context.turns` | `3` | integer 1 to 10 | Most recent exchanges to include. |
 | `classifier.context.maxChars` | `6000` | integer 500 to 16000 | Character budget, newest exchanges first. |
 | `classifier.context.includeToolSummary` | `true` | boolean | Tool names and counts per exchange. Never tool arguments or results. |
 | `classifier.context.includeTiers` | `true` | boolean | The tier each previous turn ran on, when it can be determined. |
 
-Enabling it with `backend: "prompt"` produces a config warning because nothing is sent. Stage policy such as "strong model plans, cheaper model executes" lives in your tier criteria, written by role:
+A project `bifrost.json` or `.pi/bifrost.json` can tune `turns`, `maxChars`, `includeToolSummary` and `includeTiers`, and can set `enabled` to `false`. A project-level `"enabled": true` has no effect unless the global config also enables the block, and Bifrost prints a startup warning when it ignores one. Enabling it with `backend: "prompt"` produces a config warning because nothing is sent. Stage policy such as "strong model plans, cheaper model executes" lives in your tier criteria, written by role:
 
 ```json
 {
@@ -127,7 +127,7 @@ Enabling it with `backend: "prompt"` produces a config warning because nothing i
 }
 ```
 
-A complete file is in [`examples/classifier-conversation-aware.json`](../../examples/classifier-conversation-aware.json). Enabling the block sends assistant text and earlier user prompts to the classifier provider, the same provider that receives the prompt. To turn it off, set `"classifier": { "context": { "enabled": false } }`.
+A complete file is in [`examples/classifier-conversation-aware.json`](../../examples/classifier-conversation-aware.json); use it as, or merge it into, the global config. Enabling the block sends assistant text and earlier user prompts to the classifier provider, the same provider that receives the prompt. To turn it off, set `"classifier": { "context": { "enabled": false } }` in the global or a project config.
 
 ## Tier-resolution order
 

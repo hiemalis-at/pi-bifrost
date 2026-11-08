@@ -172,7 +172,7 @@ Use when short replies such as "Approved" should be classified by the work they 
 - Defines two tiers by role: `planner` for planning and decisions, and `worker` for carrying out an agreed plan.
 - Falls back to regex rules when classification misses or has low confidence.
 
-Replace the `provider/...` model placeholders with models from your Pi registry. To stop sending context, set `classifier.context.enabled` to `false`. Details are in [Conversation context](../docs/guide/classifiers.md#conversation-context).
+Replace the `provider/...` model placeholders with models from your Pi registry. Use this file as, or merge it into, your global config (`~/.pi/agent/bifrost.json`): `classifier.context.enabled` only takes effect from the global config, and a project `bifrost.json` that sets it to `true` is ignored (project files can tune the other context keys or set it to `false`). To stop sending context, set `classifier.context.enabled` to `false`. Details are in [Conversation context](../docs/guide/classifiers.md#conversation-context).
 
 Try, after a planning exchange in the same session:
 

@@ -528,17 +528,51 @@ export function loadConfig(
     rules: DEFAULT_RULES,
   };
 
-  const configs = [
-    readJson<BifrostConfig>(join(extensionDir, "bifrost.json")),
-    readJson<BifrostConfig>(join(getAgentDir(), "bifrost.json")),
-    readJson<BifrostConfig>(join(cwd, "bifrost.json")),
-    readJson<BifrostConfig>(join(cwd, CONFIG_DIR_NAME, "bifrost.json")),
-  ];
+  const layers = readConfigLayers(cwd, extensionDir);
   let merged: BifrostConfig = base;
-  for (const cfg of configs) {
+  for (const cfg of [layers.extension, layers.global, ...layers.project]) {
     if (cfg) merged = mergeConfig(merged, cfg);
   }
+  // `classifier.context.enabled` sends conversation text to the classifier provider. Only the
+  // global config may turn it on; a project layer may only tune the other keys or turn it off.
+  const context = merged.classifier?.context;
+  if (context) {
+    const projectOptOut = layers.project.some((cfg) => cfg?.classifier?.context?.enabled === false);
+    const enabled = !projectOptOut && layers.global?.classifier?.context?.enabled === true;
+    if (enabled || context.enabled !== undefined) context.enabled = enabled;
+  }
   return merged;
+}
+
+interface ConfigLayers {
+  extension: BifrostConfig | undefined;
+  global: BifrostConfig | undefined;
+  /** Project layers in merge order: `cwd/bifrost.json`, then `cwd/<CONFIG_DIR_NAME>/bifrost.json`. */
+  project: (BifrostConfig | undefined)[];
+}
+
+function readConfigLayers(cwd: string, extensionDir: string): ConfigLayers {
+  return {
+    extension: readJson<BifrostConfig>(join(extensionDir, "bifrost.json")),
+    global: readJson<BifrostConfig>(join(getAgentDir(), "bifrost.json")),
+    project: [
+      readJson<BifrostConfig>(join(cwd, "bifrost.json")),
+      readJson<BifrostConfig>(join(cwd, CONFIG_DIR_NAME, "bifrost.json")),
+    ],
+  };
+}
+
+/**
+ * The startup warning for a `classifier.context.enabled: true` that `loadConfig` ignored: set in
+ * the extension-defaults or a project layer while the global config does not enable it.
+ * Undefined when nothing was ignored.
+ */
+export function contextOptInIgnoredWarning(cwd: string, extensionDir: string): string | undefined {
+  const layers = readConfigLayers(cwd, extensionDir);
+  if (layers.global?.classifier?.context?.enabled === true) return undefined;
+  const ignored = [layers.extension, ...layers.project].some((cfg) => cfg?.classifier?.context?.enabled === true);
+  if (!ignored) return undefined;
+  return `classifier.context.enabled is ignored in project config; enable it in the global config (${join(getAgentDir(), "bifrost.json")})`;
 }
 
 export function loadRules(cwd: string, config: BifrostConfig): RouteRule[] {

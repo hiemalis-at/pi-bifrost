@@ -118,9 +118,11 @@ By default a direct classifier judges each prompt on its own text. A short reply
 }
 ```
 
+Only the global config, `~/.pi/agent/bifrost.json`, can turn the block on. Bifrost has no trust prompt for project files, so a cloned repository must not be able to start sending your conversation to your classifier provider. A project `bifrost.json` or `.pi/bifrost.json` can tune the other keys and can turn the block off, but a project-level `"enabled": true` is ignored on its own. Bifrost prints a startup warning when that happens, and `/bifrost classifier status` shows `context: off (enable it in the global config)`.
+
 The other keys (`turns`, `maxChars`, `includeToolSummary`, `includeTiers`) and their limits are listed in [Configuration](configuration.md#conversation-context-for-the-direct-classifier).
 
-**Disclosure.** Enabling the block sends assistant text to the classifier provider. That is the provider you already chose for prompt classification, reached through the same transport. Earlier user prompts are sent as well, after redaction. Every classification while the block is on carries context: normal messages, `bifrost/auto` requests, `/bifrost preview`, `/bifrost classifier test`, and `/bifrost benchmark`. To turn it off, set:
+**Disclosure.** Enabling the block sends assistant text to the classifier provider. That is the provider you already chose for prompt classification, reached through the same transport. Earlier user prompts are sent as well, after redaction. Every classification while the block is on carries context: normal messages, `bifrost/auto` requests, `/bifrost preview`, `/bifrost classifier test`, and `/bifrost benchmark`. The block can only be enabled in the global config (`~/.pi/agent/bifrost.json`). To turn it off, set `enabled` to `false` there, or in a project file, which always wins:
 
 ```json
 {

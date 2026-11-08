@@ -26,6 +26,7 @@ import {
 import {
   loadConfig,
   loadRules,
+  contextOptInIgnoredWarning,
   configHasNoPools,
   DEFAULT_CLASSIFIER_CRITERIA,
   validateConfig,
@@ -238,6 +239,8 @@ export default function bifrostExtension(pi: ExtensionAPI) {
     const tag = issue.severity === "error" ? "error" : "warning";
     console.error(`[bifrost/config] ${tag}: ${issue.message}`);
   }
+  const ignoredContextOptIn = contextOptInIgnoredWarning(process.cwd(), extensionDir);
+  if (ignoredContextOptIn) console.error(`[bifrost/config] warning: ${ignoredContextOptIn}`);
   const cacheTtlMs = (config.cache?.ttlHours ?? DEFAULT_TTL_HOURS) * 60 * 60 * 1000;
   const cacheEntries = loadCache(cachePath(process.cwd(), config.cache?.path), cacheTtlMs);
   const reliabilityStore = new ReliabilityStore({ cwd: process.cwd(), config: config.reliability });

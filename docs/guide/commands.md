@@ -19,7 +19,7 @@
 | `/bifrost classifier on` | Enable configured classifier |
 | `/bifrost classifier off` | Disable classifier while retaining routing |
 | `/bifrost classifier test` | Make fresh classifier request and show result/fallback. Hands session context to the classifier when `classifier.context` is enabled |
-| `/bifrost classifier status` | Show effective backend, detection reason, model, fallback, conversation context state (`context: off`, `context: on (sent to the classifier provider)`, or `context: off (direct classifier backend required)`), and safe metrics |
+| `/bifrost classifier status` | Show effective backend, detection reason, model, fallback, conversation context state (`context: off`, `context: on (sent to the classifier provider)`, or `context: off (direct classifier backend required)`, or `context: off (enable it in the global config)` when a project-level `enabled: true` was ignored), and safe metrics |
 | `/bifrost debug` | Show effective routing and reliability diagnostics |
 | `/bifrost providers` | List providers available through Pi |
 | `/bifrost benchmark <prompt>` | Classify a prompt and show the outcome without generating. Hands session context to the classifier when `classifier.context` is enabled |
