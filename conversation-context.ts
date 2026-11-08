@@ -42,13 +42,19 @@ const REDACTED = "[redacted]";
 // Order matters: whole-block and header shapes first so later patterns do not
 // re-match their remains.
 const SECRET_NAME = "(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD)";
+const QUOTED_VALUE = `"[^"\\n]*"|'[^'\\n]*'`;
 // Always consumes the whole value, even one already containing "[redacted]": fail closed.
-const SECRET_VALUE = `(?:"[^"\\n]*"|'[^'\\n]*'|\\S+)`;
+const SECRET_VALUE = `(?:${QUOTED_VALUE}|\\S+)`;
+// With whitespace on both sides of the separator, an unquoted value may contain spaces
+// ("PASSWORD = correct horse battery staple"): redact to the end of the line. Without it
+// ("password: hunter2 please") only the first word is the value, so prose after it survives.
+const SPACED_SECRET_VALUE = `(?:${QUOTED_VALUE}|\\S[^\\n]*)`;
 
 const REDACTION_PATTERNS: readonly (readonly [RegExp, boolean?])[] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],
-  // scheme://user:pass@host: only the password is replaced (second element: keep captured prefix).
-  [/\b([a-z][a-z0-9+.-]{0,15}:\/\/[^\s:\/@]+:)(?!\[redacted\]@)[^\s@\/]+@/gi, true],
+  // scheme://user:pass@host, user may be empty (redis://:pass@host): only the password is
+  // replaced (second element: keep captured prefix).
+  [/\b([a-z][a-z0-9+.-]{0,15}:\/\/[^\s:\/@]*:)(?!\[redacted\]@)[^\s@\/]+@/gi, true],
   [/\bAuthorization[ \t]*:[ \t]*(?:Bearer|Basic)[ \t]+\S+/gi],
   // Bare bearer token; requires a digit so prose like "Bearer authentication" survives.
   [/\bBearer[ \t]+(?=[A-Za-z0-9._~+\/=-]*\d)[A-Za-z0-9._~+\/=-]{8,}/g],
@@ -56,10 +62,19 @@ const REDACTION_PATTERNS: readonly (readonly [RegExp, boolean?])[] = [
   [/\bgithub_pat_[A-Za-z0-9_]{16,}/g],
   [/\bgh[pousr]_[A-Za-z0-9]{16,}/g],
   [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g],
+  // Google API key: 39 characters, one below the entropy floor.
+  [/\bAIza[0-9A-Za-z_-]{35,}/g],
+  [/\bhf_[A-Za-z0-9]{30,}/g],
+  [/\bglpat-[A-Za-z0-9_-]{20,}/g],
+  [/\b[srp]k_(?:live|test)_[A-Za-z0-9]{10,}/g],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g],
   // CLI flags: --password x, --token=x. Before assignments so the whole flag is consumed.
   [new RegExp(`--${SECRET_NAME}(?:[ \\t]+|=)${SECRET_VALUE}`, "gi")],
-  // NAME=value, NAME: value, "name": "value". Name must end in the keyword.
-  [new RegExp(`["']?\\b[A-Za-z0-9_]*${SECRET_NAME}["']?[ \\t]*[=:][ \\t]*${SECRET_VALUE}`, "gi")],
+  // NAME=value, NAME: value, "name": "value", PASSWORD = several words. Name must end in the keyword.
+  [new RegExp(
+    `["']?\\b[A-Za-z0-9_]*${SECRET_NAME}["']?(?:[ \\t]+[=:][ \\t]+${SPACED_SECRET_VALUE}|[ \\t]*[=:][ \\t]*${SECRET_VALUE})`,
+    "gi",
+  )],
 ];
 
 const HIGH_ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{40,}/g;

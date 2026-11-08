@@ -66,6 +66,39 @@ describe("redactSecrets", () => {
     });
   }
 
+  // Shapes that passed unchanged before: below the 40-char entropy floor and without a prefix rule.
+  const google = "AIza" + "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q";
+  const newShapes: Array<[string, string, string]> = [
+    ["Google API key (39 chars)", `key ${google} end`, google.slice(4)],
+    ["Hugging Face token", "use hf_AbCdEfGhIjKlMnOpQrStUvWxYz0123456 now", "AbCdEfGhIj"],
+    ["GitLab PAT", "export glpat-Ab1Cd2Ef3Gh4Ij5Kl6Mn7 now", "Ab1Cd2Ef3Gh4"],
+    ["Stripe secret key", "stripe sk_live_51HabcDEF123ghiJKL now", "51HabcDEF123"],
+    ["Stripe restricted key", "stripe rk_live_51HabcDEF123ghiJKL now", "51HabcDEF123"],
+    ["Stripe publishable key", "stripe pk_live_51HabcDEF123ghiJKL now", "51HabcDEF123"],
+    ["short Slack bot token", "slack xoxb-1234-5678-abcDEF now", "1234-5678-abcDEF"],
+    ["short Slack user token", "slack xoxp-1234-5678-abcDEF now", "1234-5678-abcDEF"],
+    ["short Slack app token", "slack xoxa-1234-5678-abcDEF now", "1234-5678-abcDEF"],
+    ["URL credentials with an empty user", "cache redis://:s3cr3tpw@cache.internal:6379/0", "s3cr3tpw"],
+    ["unquoted spaced assignment (=)", "PASSWORD = correct horse battery staple", "horse battery staple"],
+    ["unquoted spaced assignment (: with spaces)", "password : correct horse battery staple", "horse battery staple"],
+    ["unquoted spaced assignment, unbalanced quote", 'API_KEY = "correct horse battery', "horse battery"],
+  ];
+  for (const [name, input, secret] of newShapes) {
+    it(`redacts ${name}`, () => {
+      const out = redactSecrets(input);
+      assert.ok(out.text.includes("[redacted]"), out.text);
+      assert.ok(!out.text.includes(secret), out.text);
+      assert.ok(out.count >= 1);
+      assert.equal(redactSecrets(out.text).text, out.text, `not idempotent: ${input}`);
+    });
+  }
+
+  it("keeps the host of an empty-user URL and the rest of the line after a spaced assignment", () => {
+    assert.equal(redactSecrets("redis://:s3cr3tpw@cache.internal:6379/0").text, "redis://:[redacted]@cache.internal:6379/0");
+    assert.equal(redactSecrets("PASSWORD = correct horse battery staple\nnext line").text, "[redacted]\nnext line");
+    assert.equal(redactSecrets('{"password": "hunter2", "ok": 1}').text, '{[redacted], "ok": 1}');
+  });
+
   it("redacts an assignment whose value is an sk- secret (count may over-count)", () => {
     for (const input of ['password: "sk-abcdefgh1234"', 'mysql --password "sk-abcdefgh1234" -u x']) {
       const out = redactSecrets(input);
@@ -132,6 +165,16 @@ describe("redactSecrets", () => {
       "-".repeat(160000),
       "password: \"".repeat(Math.ceil(100000 / 11)),
       "[redacted]".repeat(10000),
+      "AIza".repeat(25000),
+      "hf_".repeat(34000),
+      "glpat-".repeat(17000),
+      "sk_live_".repeat(12500),
+      "xoxb-".repeat(20000),
+      "redis://:".repeat(11000),
+      "a://:" + "x".repeat(100000),
+      "PASSWORD = ".repeat(9000),
+      "password: " + "a ".repeat(50000),
+      "password:" + " ".repeat(100000) + "\n",
     ];
     for (const input of inputs) {
       const start = performance.now();
@@ -165,6 +208,12 @@ describe("redactSecrets", () => {
     "see http://localhost:3000/path and https://github.com/org/repo",
     "use Bearer authentication here",
     "max_tokens: 100",
+    "call hf_hub_download(repo) first",
+    "keys start with AIza and are short-lived",
+    "Slack bot tokens start with xoxb- usually",
+    "stripe test mode uses sk_live_ only in prod",
+    "connect to redis://cache.internal:6379/0",
+    "the password policy: twelve characters minimum",
   ]) {
     it(`leaves near miss untouched: ${near}`, () => {
       assert.deepEqual(redactSecrets(near), { text: near, count: 0 });
