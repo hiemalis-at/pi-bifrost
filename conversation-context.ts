@@ -227,16 +227,34 @@ interface Prepared {
   cut: boolean;
 }
 
-function prepare(raw: string, cap: number): Prepared {
+type Clip = (text: string, max: number) => string;
+
+function prepare(raw: string, cap: number, cutText: Clip): Prepared {
   const redacted = redactSecrets(stubCodeFences(raw.trim()));
   if (redacted.text.length <= cap) return { text: redacted.text, redactions: redacted.count, cut: false };
-  return { text: clip(redacted.text, cap), redactions: redacted.count, cut: true };
+  return { text: cutText(redacted.text, cap), redactions: redacted.count, cut: true };
 }
 
+/** Keeps the start; used for user prompts, whose request is usually stated first. */
 function clip(text: string, max: number): string {
   if (text.length <= max) return text;
   if (max <= 0) return "";
   return `${text.slice(0, max - 1)}…`;
+}
+
+/**
+ * Keeps the start and the end; used for assistant replies. A reply usually
+ * ends with the question or options the next user prompt answers ("Shall I
+ * proceed?", "Option A or B?"), so a head-only cut would drop exactly what a
+ * short reply refers to. One third of the room goes to the start.
+ */
+function clipEnds(text: string, max: number): string {
+  if (text.length <= max) return text;
+  if (max <= 1) return clip(text, max);
+  const room = max - 1;
+  const head = Math.floor(room / 3);
+  const tail = room - head;
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
 }
 
 export function buildConversationContext(
@@ -259,8 +277,8 @@ export function buildConversationContext(
     const withText = turn.assistants.filter((m) => assistantText(m).length > 0);
     const chosen = withText[withText.length - 1] ?? turn.assistants[turn.assistants.length - 1];
 
-    let user = prepare(turn.user, PER_USER_CAP);
-    let reply = prepare(assistantText(chosen), PER_ASSISTANT_CAP);
+    let user = prepare(turn.user, PER_USER_CAP, clip);
+    let reply = prepare(assistantText(chosen), PER_ASSISTANT_CAP, clipEnds);
 
     const remaining = options.maxChars - chars;
     let cut = user.cut || reply.cut;
@@ -273,7 +291,7 @@ export function buildConversationContext(
       // Newest exchange alone exceeds the budget: shrink it rather than return nothing.
       const userRoom = Math.min(user.text.length, Math.floor(remaining / 2));
       user = { ...user, text: clip(user.text, userRoom) };
-      reply = { ...reply, text: clip(reply.text, remaining - user.text.length) };
+      reply = { ...reply, text: clipEnds(reply.text, remaining - user.text.length) };
       cut = true;
     }
 
