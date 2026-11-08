@@ -122,7 +122,7 @@ Only the global config, `~/.pi/agent/bifrost.json`, can turn the block on. Bifro
 
 The other keys (`turns`, `maxChars`, `includeToolSummary`, `includeTiers`) and their limits are listed in [Configuration](configuration.md#conversation-context-for-the-direct-classifier).
 
-**Disclosure.** Enabling the block sends assistant text to the classifier provider. That is the provider you already chose for prompt classification, reached through the same transport. Earlier user prompts are sent as well, after redaction. Every classification while the block is on carries context: normal messages, `bifrost/auto` requests, `/bifrost preview`, `/bifrost classifier test`, and `/bifrost benchmark`. The block can only be enabled in the global config (`~/.pi/agent/bifrost.json`). To turn it off, set `enabled` to `false` there, or in a project file, which always wins:
+**Disclosure.** Enabling the block sends assistant text to the classifier provider. That is the provider you already chose for prompt classification, reached through the same transport. Earlier user prompts are sent as well, after redaction. While the block is on, context is sent whenever there is a prior exchange and the backend is direct: normal messages, `bifrost/auto` requests, `/bifrost preview`, `/bifrost classifier test`, and `/bifrost benchmark`. It is not sent on the first turn of a session, in subagent sessions, or with the prompt backend. The block can only be enabled in the global config (`~/.pi/agent/bifrost.json`). To turn it off, set `enabled` to `false` there, or in a project file, which always wins:
 
 ```json
 {
@@ -156,7 +156,7 @@ The request holds these as an object named `state`:
 **Treatment.**
 
 - A code fence in assistant text becomes a stub such as `[code: ts, 42 lines]`.
-- Credential-shaped text in assistant text and earlier user prompts is replaced with `[redacted]`. The patterns cover provider API key shapes, bearer tokens, private key blocks, secret-named assignments (including quoted JSON and YAML), `--password`-style flags, credentials in URLs, and long high-entropy tokens. Text that matches none of these patterns is sent as written.
+- Credential-shaped text in assistant text and earlier user prompts is replaced with `[redacted]`. The patterns cover provider API key shapes, bearer tokens, private key blocks, secret-named assignments (including quoted JSON and YAML), `--password`-style flags, credentials in URLs, and long high-entropy tokens. Redaction is best-effort pattern matching, not a guarantee. Natural-language secrets (for example a password described in a sentence) and secrets with no recognizable shape are not detected and are sent as written, as is any other text that matches none of the patterns. A secret-named assignment with spaces around `=` or `:` is redacted to the end of the line. If you paste secrets into prompts, do not enable the block.
 - `maxChars` is the total budget. Turns are kept newest first. Each assistant reply is capped at 2000 characters and each user prompt at 1000. When earlier turns are dropped, `omitted_earlier_turns` is set.
 
 **When a judgment is used.** A returned judgment decides the tier, subject to the single confidence threshold `classifier.minConfidence`. If the classifier misses or answers with low confidence, routing continues exactly as it does without context: prompt classifier fallback, then regex rules, then the default tier. The preview then reports that the classification was made without usable context.
