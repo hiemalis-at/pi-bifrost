@@ -342,13 +342,13 @@ describe("buildConversationContext", () => {
       [
         user("q"),
         assistant([text("first")]),
-        assistant([text("second"), text(" part")]),
+        assistant([text("second"), text("part")]),
         assistant([{ type: "toolCall", name: "bash" }]),
       ],
       OPTS,
       noTier,
     );
-    assert.equal(ctx?.exchanges[0].assistant, "second part");
+    assert.equal(ctx?.exchanges[0].assistant, "second\npart");
     assert.equal(ctx?.exchanges[0].tools, "bash x1");
   });
 
@@ -429,6 +429,11 @@ describe("buildConversationContext", () => {
     assert.equal(ctx?.exchanges[0].user, "my [redacted] please");
     assert.equal(ctx?.exchanges[0].assistant, "run\n[code: sh, 2 lines]\nwith [redacted]");
     assert.equal(ctx?.redactions, 2);
+  });
+
+  it("joins several assistant text blocks with a newline so words do not fuse", () => {
+    const ctx = buildConversationContext([user("q"), assistant([text("First part."), text("Second part.")])], OPTS, noTier);
+    assert.equal(ctx?.exchanges[0].assistant, "First part.\nSecond part.");
   });
 
   it("accepts string and block user content", () => {

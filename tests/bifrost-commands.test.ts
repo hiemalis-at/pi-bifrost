@@ -1773,6 +1773,20 @@ describe("conversation context visibility", () => {
       assert.match(await statusOutput(contextState({ enabled: false })), /context: off$/m);
     });
 
+    it("shows context off in a subagent run or with the classifier toggled off at runtime", async () => {
+      const toggledOff = contextState({ enabled: true });
+      toggledOff.classifierEnabled = false;
+      assert.match(await statusOutput(toggledOff), /^context: off$/m);
+      const previous = process.env.PI_SUBAGENT_RUN_ID;
+      process.env.PI_SUBAGENT_RUN_ID = "run-1";
+      try {
+        assert.match(await statusOutput(contextState({ enabled: true })), /^context: off$/m);
+      } finally {
+        if (previous === undefined) delete process.env.PI_SUBAGENT_RUN_ID;
+        else process.env.PI_SUBAGENT_RUN_ID = previous;
+      }
+    });
+
     it("shows context off with the backend requirement for the prompt backend", async () => {
       const output = await statusOutput(contextState({ enabled: true }, "prompt"));
       assert.match(output, /context: off \(direct classifier backend required\)/);

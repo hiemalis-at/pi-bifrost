@@ -682,9 +682,17 @@ async function handleBenchmark(
   await uiResult(ctx, "Bifrost benchmark", lines);
 }
 
-/** `/bifrost classifier status` line for conversation context. "On" needs the block enabled and a direct backend. */
-function contextStatusLine(blockEnabled: boolean, backend: ClassifierBackend): string {
-  if (!blockEnabled) return "context: off";
+/**
+ * `/bifrost classifier status` line for conversation context. "On" needs the block enabled, a
+ * direct backend, the classifier on at runtime, and a non-subagent session.
+ */
+function contextStatusLine(
+  blockEnabled: boolean,
+  backend: ClassifierBackend,
+  classifierEnabled: boolean,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  if (!blockEnabled || !classifierEnabled || env.PI_SUBAGENT_RUN_ID) return "context: off";
   const direct = backend === CLASSIFIER_BACKEND_IDS.typesafe || backend === CLASSIFIER_BACKEND_IDS.piNative;
   return direct ? "context: on (sent to the classifier provider)" : "context: off (direct classifier backend required)";
 }
@@ -1435,7 +1443,7 @@ export function createCommandRouter(
       const lines = [
         `classifier: enabled=${state.classifierEnabled}`,
         detail,
-        contextStatusLine(classifier?.context?.enabled === true, backend),
+        contextStatusLine(classifier?.context?.enabled === true, backend, state.classifierEnabled !== false),
         ...(backend !== CLASSIFIER_BACKEND_IDS.prompt ? [`observations=${metrics.total}`, `outcomes=${JSON.stringify(metrics.outcomes)}`] : []),
       ];
       uiOutput(ctx, lines);

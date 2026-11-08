@@ -193,10 +193,7 @@ function textOf(content: unknown): string {
 }
 
 function assistantText(message: MessageLike): string {
-  return blocks(message.content)
-    .filter((b) => b.type === "text" && typeof b.text === "string")
-    .map((b) => b.text as string)
-    .join("");
+  return textOf(message.content);
 }
 
 function toolNames(message: MessageLike): string[] {

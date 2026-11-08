@@ -210,6 +210,11 @@ test("retain-previous-tier answers previousTier, or the baseline default, with z
   }
 });
 
+test("toConversationContext counts chars like the real builder: user and assistant text, never tools", () => {
+  const context = toConversationContext({ exchanges: [{ user: "plan it", assistant: "Plan ready.", tier: "frontier", tools: "read x3, grep x2" }] });
+  assert.equal(context.chars, "plan it".length + "Plan ready.".length);
+});
+
 test("context arm sends the real instructions and object state through the injected client; prompt-only sends the bare string", async () => {
   const bodies: Record<string, unknown>[] = [];
   const client = new TypeSafeJevClient({ apiKey: "test", fetchImpl: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return response("frontier"); } });

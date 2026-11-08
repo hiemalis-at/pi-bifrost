@@ -87,9 +87,12 @@ export function baselineTier(prompt: string, rules: readonly BaselineRule[] = DE
   return tier === undefined ? { tier: defaultTier, source: "default" } : { tier, source: "regex_rule" };
 }
 
-/** Map a scenario's exchanges onto the real classifier context shape. Synthetic scenarios are never redacted or truncated. */
+/**
+ * Map a scenario's exchanges onto the real classifier context shape. Synthetic scenarios are
+ * never redacted or truncated. `chars` counts user and assistant text only, like the real builder.
+ */
 export function toConversationContext(context: ScenarioContext): ConversationContext {
-  const chars = context.exchanges.reduce((sum, exchange) => sum + exchange.user.length + exchange.assistant.length + (exchange.tools?.length ?? 0), 0);
+  const chars = context.exchanges.reduce((sum, exchange) => sum + exchange.user.length + exchange.assistant.length, 0);
   return { exchanges: context.exchanges, omittedEarlierTurns: false, chars, redactions: 0, truncated: false };
 }
 
