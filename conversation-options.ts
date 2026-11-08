@@ -8,11 +8,51 @@ import {
   type SessionEntryLike,
 } from "./conversation-context.ts";
 
+type MessageLike = NonNullable<SessionEntryLike["message"]>;
+
+/** Structural subset of Pi's `ReadonlySessionManager`: the projection Pi builds for model context. */
+export interface SessionProjectionSource {
+  buildSessionProjection(): {
+    readonly entries: readonly { readonly sourceEntry: { readonly type: string }; readonly messages: readonly unknown[] }[];
+  };
+}
+
+function isMessageLike(value: unknown): value is MessageLike {
+  return typeof value === "object" && value !== null && typeof (value as { role?: unknown }).role === "string";
+}
+
+/**
+ * Session messages as the model sees them, in branch order. Pi's projection applies
+ * `context_edit` entries (a null replacement omits the target, a value swaps its content) and
+ * compaction, so text another extension scrubbed or omitted is never read here. Only
+ * `message` entries contribute, as with the raw branch; custom messages, summaries and state
+ * entries are skipped. A projection that throws yields no entries: no context is sent.
+ */
+export function modelVisibleEntries(session: SessionProjectionSource): SessionEntryLike[] {
+  let projection: ReturnType<SessionProjectionSource["buildSessionProjection"]>;
+  try {
+    projection = session.buildSessionProjection();
+  } catch {
+    return [];
+  }
+  const entries: SessionEntryLike[] = [];
+  for (const projected of projection.entries) {
+    if (projected.sourceEntry.type !== "message") continue;
+    for (const message of projected.messages) {
+      if (isMessageLike(message)) entries.push({ type: "message", message });
+    }
+  }
+  return entries;
+}
+
 export interface ClassifyOptionsSource {
   readonly config: BifrostConfig;
   readonly backend: ClassifierBackend;
-  /** The current session branch (`ctx.sessionManager.getBranch()`). */
-  readonly branch?: readonly SessionEntryLike[];
+  /**
+   * Model-visible session entries (`modelVisibleEntries(ctx.sessionManager)`). A function is
+   * called only when context or advisory context is actually built.
+   */
+  readonly branch?: readonly SessionEntryLike[] | (() => readonly SessionEntryLike[]);
   /** Also build `advisoryContext` when the block is disabled. Only preview sets this: nothing else reads it. */
   readonly advisory?: boolean;
 }
@@ -36,11 +76,13 @@ export function buildClassifyOptions(
   source: ClassifyOptionsSource,
   env: Record<string, string | undefined> = process.env,
 ): BuiltClassifyOptions {
-  const { config, backend, branch, advisory } = source;
-  if (env.PI_SUBAGENT_RUN_ID || !isDirectBackend(backend) || !branch || branch.length === 0) return {};
+  const { config, backend, advisory } = source;
+  if (env.PI_SUBAGENT_RUN_ID || !isDirectBackend(backend) || !source.branch) return {};
   const block = config.classifier?.context;
   const enabled = block?.enabled === true;
   if (!enabled && advisory !== true) return {};
+  const branch = typeof source.branch === "function" ? source.branch() : source.branch;
+  if (branch.length === 0) return {};
   const context = buildConversationContext(
     branch,
     {

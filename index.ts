@@ -8,10 +8,9 @@ import {
   createPipeline,
   type ClassificationPipeline,
   type ClassificationResult,
-  type ClassifyOptions,
   type PipelineDeps,
 } from "./classification-pipeline.ts";
-import { buildClassifyOptions, shouldCacheResult } from "./conversation-options.ts";
+import { shouldCacheResult } from "./conversation-options.ts";
 import {
   cachePath,
   lookupCache,
@@ -44,7 +43,7 @@ import {
 } from "./routing.ts";
 import { ReliabilityStore } from "./reliability-store.ts";
 import { loadRuntimeState, runtimeStatePath, saveRuntimeState, isPassiveModelSelection, createSelfSelectTracker } from "./runtime-state.ts";
-import { createCommandRouter, getBifrostCommandCompletions, runBifrostCommand, log, uiBusy, uiDone, syncBifrostModeStatus, clearBifrostWidgets, type BifrostState } from "./commands.ts";
+import { classifyOptionsFor, createCommandRouter, getBifrostCommandCompletions, runBifrostCommand, log, uiBusy, uiDone, syncBifrostModeStatus, clearBifrostWidgets, type BifrostState } from "./commands.ts";
 import { setupDebug, debug, debugMeasure } from "./debug.ts";
 import { parseInlineOverride } from "./inline-override.ts";
 import { BIFROST_AUTO_ID, BIFROST_AUTO_PROVIDER, isBifrostAuto, isVirtualModel } from "./virtual-model.ts";
@@ -318,15 +317,6 @@ export default function bifrostExtension(pi: ExtensionAPI) {
     pipeline = undefined;
   }
 
-  /** Per-call classify options from the session branch. No `advisory`: only preview reads advisory context. */
-  function classifyOptionsFor(ctx: ExtensionContext): ClassifyOptions {
-    return buildClassifyOptions({
-      config: state.config,
-      backend: effectiveBackendOf(state.config, detectionEngine).backend,
-      branch: ctx.sessionManager.getBranch(),
-    });
-  }
-
   // Mutable state shared with command handlers.
   const state: BifrostState = {
     config,
@@ -453,7 +443,7 @@ export default function bifrostExtension(pi: ExtensionAPI) {
           }
           const classification: ClassificationResult = forcedTier
             ? { kind: "classified", tier: forcedTier, source: "inline" }
-            : await getPipeline(ctx).classify(prompt, signal, classifyOptionsFor(ctx));
+            : await getPipeline(ctx).classify(prompt, signal, classifyOptionsFor(ctx, state));
           if (signal?.aborted) throw new Error("Bifrost: route aborted");
           if (classification.kind === "unclassified") throw new Error("Bifrost: no configured tier for virtual request");
           const classifierIdentity = classification.kind === "classified" && classification.judgment
@@ -677,7 +667,7 @@ export default function bifrostExtension(pi: ExtensionAPI) {
       const endClassify = debugMeasure("input", "classify");
       const classification = forcedTier
         ? { kind: "classified" as const, tier: forcedTier, source: "inline" as const }
-        : await getPipeline(ctx).classify(promptText, ctx.signal, classifyOptionsFor(ctx));
+        : await getPipeline(ctx).classify(promptText, ctx.signal, classifyOptionsFor(ctx, state));
 
       if (classification.kind === "classified") {
         const tag = classification.source === "inline" ? "!" : classification.source;

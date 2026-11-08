@@ -8,7 +8,7 @@ import { DEFAULT_CLASSIFIER_CRITERIA, DEFAULT_RULES, PROMPT_ONLY_FIELDS, loadCon
 import type { CacheEntry } from "./cache.ts";
 import { cachePath, loadCache, saveCache, DEFAULT_MAX_ENTRIES, DEFAULT_THRESHOLD } from "./cache.ts";
 import type { ClassificationPipeline, ClassificationResult, ClassificationSource } from "./classification-pipeline.ts";
-import { buildClassifyOptions, type BuiltClassifyOptions } from "./conversation-options.ts";
+import { buildClassifyOptions, modelVisibleEntries, type BuiltClassifyOptions } from "./conversation-options.ts";
 import { contextSummary } from "./classifier-semantics.ts";
 import { setupDebug, debug, debugMeasure } from "./debug.ts";
 import { runProbe, probeOptionsFromConfig, PROBE_PROMPT_TEXT } from "./probe.ts";
@@ -56,14 +56,20 @@ export interface BifrostState {
 }
 
 /**
- * Classify options from the session branch, same as the turn handler. Only preview passes
+ * Classify options for one call, shared by the turn handler, the `bifrost/auto` route and the
+ * classifying commands. Context comes from what the model sees (Pi's session projection, so
+ * context edits and compaction apply), built only when it will be used. Only preview passes
  * `advisory`, which adds an `advisoryContext` for size reporting; strip it before `classify`.
  */
-function classifyOptionsFor(ctx: ExtensionContext, state: BifrostState, advisory = false): BuiltClassifyOptions {
+export function classifyOptionsFor(
+  ctx: Pick<ExtensionContext, "sessionManager">,
+  state: Pick<BifrostState, "config" | "effectiveClassifierBackend">,
+  advisory = false,
+): BuiltClassifyOptions {
   return buildClassifyOptions({
     config: state.config,
     backend: state.effectiveClassifierBackend(state.config).backend,
-    branch: ctx.sessionManager.getBranch(),
+    branch: () => modelVisibleEntries(ctx.sessionManager),
     ...(advisory ? { advisory: true } : {}),
   });
 }

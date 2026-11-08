@@ -7,6 +7,7 @@ import { BIFROST_COMMAND_OPTIONS, BIFROST_JSON_PREFIX, buildClassifierTestReport
 import { makeModel, makePiClassifierModel, makeRegistry } from "./helpers.ts";
 import { createPipeline } from "../classification-pipeline.ts";
 import { setupDebug } from "../debug.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_THRESHOLD, lookupCache, touchCacheEntry, updateCache, type CacheEntry } from "../cache.ts";
 
 function makeCtx(
@@ -70,7 +71,7 @@ function makeCtx(
       ...registryOverride,
     },
     scopedModels: [],
-    sessionManager: { getBranch: () => [] },
+    sessionManager: { getBranch: () => [], buildSessionProjection: () => ({ entries: [], messages: [] }) },
   };
   return { ctx: ctx as never, calls };
 }
@@ -1595,7 +1596,11 @@ describe("conversation context visibility", () => {
 
   function printCtx(sessionBranch: unknown[] = branch) {
     const { ctx } = makeCtx([makeModel("fixture", "chat")]);
-    return { ...(ctx as unknown as Record<string, unknown>), mode: "print", hasUI: false, sessionManager: { getBranch: () => sessionBranch } } as never;
+    // Pi's projection of an unedited, uncompacted branch: one projected entry per raw entry.
+    const projection = () => ({
+      entries: sessionBranch.map((entry) => ({ sourceEntry: entry, messages: (entry as { type: string }).type === "message" ? [(entry as { message: unknown }).message] : [] })),
+    });
+    return { ...(ctx as unknown as Record<string, unknown>), mode: "print", hasUI: false, sessionManager: { getBranch: () => sessionBranch, buildSessionProjection: projection } } as never;
   }
 
   function contextState(contextBlock: Record<string, unknown> | undefined, backend = "pi-native", directResult?: () => Promise<unknown>) {
@@ -1680,6 +1685,33 @@ describe("conversation context visibility", () => {
     const json = jsonReport(await capture(() => createCommandRouter(state)("preview --json go", printCtx())));
     assert.equal(json.context.sent, true);
     assert.equal(json.context.used, false);
+  });
+
+  it("preview, classifier test and benchmark hand the classifier Pi's edited context, not the raw branch", async () => {
+    const sm = SessionManager.inMemory("/tmp/bifrost-commands-context");
+    const userId = sm.appendMessage({ role: "user", content: [text("ORIGINAL_USER_TEXT plan")], timestamp: 0 } as never);
+    const omittedId = sm.appendMessage({ role: "assistant", provider: "fixture", model: "chat", api: "openai-completions", stopReason: "stop", timestamp: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, content: [text("OMITTED_ASSISTANT_TEXT"), { type: "toolCall", id: "c1", name: "edit", arguments: {} }] } as never);
+    sm.appendMessage({ role: "assistant", provider: "fixture", model: "chat", api: "openai-completions", stopReason: "stop", timestamp: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, content: [text("kept plan")] } as never);
+    sm.appendContextEdit(userId, { content: [text("SCRUBBED plan")] as never });
+    sm.appendContextEdit(omittedId, null);
+    const handed: unknown[] = [];
+    const state = contextState({ enabled: true }, "pi-native", (async (_text: string, _tiers: readonly string[], _signal: unknown, context: unknown) => {
+      handed.push(context);
+      return { tier: "general", backend: "pi-native", contextSent: true };
+    }) as never);
+    const { ctx } = makeCtx([makeModel("fixture", "chat")]);
+    const sessionCtx = { ...(ctx as unknown as Record<string, unknown>), mode: "print", hasUI: false, sessionManager: sm } as never;
+    for (const command of ["preview --json go", "classifier test", "benchmark go"]) {
+      await capture(() => createCommandRouter(state)(command, sessionCtx));
+    }
+    assert.ok(handed.length >= 3, `classifier calls: ${handed.length}`);
+    for (const context of handed) {
+      const serialized = JSON.stringify(context);
+      assert.ok(serialized.includes("SCRUBBED plan"), serialized);
+      assert.equal(serialized.includes("ORIGINAL_USER_TEXT"), false, serialized);
+      assert.equal(serialized.includes("OMITTED_ASSISTANT_TEXT"), false, serialized);
+      assert.equal(serialized.includes("edit x"), false, serialized);
+    }
   });
 
   it("renders redaction and truncation as words in the context line", () => {
