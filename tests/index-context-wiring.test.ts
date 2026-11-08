@@ -14,7 +14,6 @@ import { makeModel, makePiClassifierModel, makeRegistry } from "./helpers.ts";
 import { VIRTUAL_MODEL_API } from "../virtual-model.ts";
 import { normalize } from "../cache.ts";
 
-const TIERS = ["quick", "general", "frontier"] as const;
 const fast = makeModel("fake", "fast");
 const strong = makeModel("fake", "strong");
 const autoModel = { ...makeModel("bifrost", "auto"), api: VIRTUAL_MODEL_API };
